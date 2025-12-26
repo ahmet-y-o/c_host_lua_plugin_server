@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 struct MHD_Daemon *start_server(PluginManager *pm) {
   struct MHD_Daemon *daemon;
@@ -37,6 +39,27 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
 
     // 1. Check if URL starts with "/plugin_name"
     if (url[0] == '/' && strncmp(url + 1, p_name, name_len) == 0) {
+      const char *after_plugin =
+          url + 1 + name_len; // Pointing at what's after "/carddav"
+
+      // CHECK FOR STATIC BYPASS: Does it start with "/static/"?
+      if (strncmp(after_plugin, "/static/", 8) == 0) {
+        const char *filename = after_plugin + 8; // The part after "/static/"
+
+        // 1. Build the absolute path to the file
+        char file_path[512];
+        snprintf(file_path, sizeof(file_path), "%s/static/%s",
+                 pm->list[i]->path, filename);
+
+        // 2. Try to serve it directly from C
+        if (serve_static_file(file_path, connection) == MHD_YES) {
+          return MHD_YES; // Success! No Lua needed.
+        }
+
+        // If file doesn't exist, we can either fall through to 404 or let Lua
+        // try
+      }
+
       // Check if it's exactly "/name" or starts with "/name/"
       char next_char = url[name_len + 1];
       if (next_char == '\0' || next_char == '/') {
@@ -114,4 +137,34 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
   MHD_destroy_response(response);
 
   return ret;
+}
+
+const char* get_mime_type(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0) return "text/html";
+    if (strcmp(ext, ".css") == 0)  return "text/css";
+    if (strcmp(ext, ".js") == 0)   return "application/javascript";
+    if (strcmp(ext, ".png") == 0)  return "image/png";
+    if (strcmp(ext, ".jpg") == 0)  return "image/jpeg";
+    if (strcmp(ext, ".svg") == 0)  return "image/svg+xml";
+    return "application/octet-stream";
+}
+
+enum MHD_Result serve_static_file(const char *path, struct MHD_Connection *connection) {
+    int fd = open(path, O_RDONLY);
+    if (fd == -1) {
+        return MHD_NO; // File not found, C will then try Lua or return 404
+    }
+
+    // Get file size
+    struct stat st;
+    fstat(fd, &st);
+
+    struct MHD_Response *response = MHD_create_response_from_fd(st.st_size, fd);
+    MHD_add_response_header(response, "Content-Type", get_mime_type(path));
+    
+    enum MHD_Result ret = MHD_queue_response(connection, 200, response);
+    MHD_destroy_response(response);
+    return ret;
 }
