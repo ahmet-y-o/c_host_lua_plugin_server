@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include "plugin_manager.h"
 #include "etlua_src.h"
+#include "applua_src.h"
 
 PluginManager* create_manager() {
 
@@ -68,21 +69,10 @@ Plugin* create_plugin(char *name, char *path) {
     }
 
     luaL_openlibs(p->L);
-    /*
-    if (luaL_loadstring(p->L, etlua_source) == 0) {
-        // Execute it once to get the returned table
-        if (lua_pcall(p->L, 0, 1, 0) == 0) {
-            // Set the result as a global variable named 'etlua'
-            lua_setglobal(p->L, "etlua");
-            printf("etlua initialized for plugin.\n");
-        } else {
-            fprintf(stderr, "Exec error: %s\n", lua_tostring(p->L, -1));
-        }
-    } else {
-        fprintf(stderr, "Load error: %s\n", lua_tostring(p->L, -1));
-    }
-    */
     preload_module(p->L, "etlua", etlua_source);
+    preload_module(p->L, "core", app_lua_source);
+
+
     // 1. Load the file (compiles it to a chunk on the stack)
     size_t plugin_file_path_size = strlen(path) + 11; //  /plugin.lua is 11 characters
     char *plugin_file_path = malloc(plugin_file_path_size);
