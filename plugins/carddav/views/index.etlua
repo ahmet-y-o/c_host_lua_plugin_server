@@ -1,14 +1,14 @@
 <!doctype html>
 <html>
 <head>
-<title><%= title %></title>
+<title></title>
 </head>
 
 
 <body>
 
     <h1>Hello From EtLua! Carddav!</h1>
-    <%= method %>
+    
 
 
 </body>

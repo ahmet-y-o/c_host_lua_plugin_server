@@ -77,14 +77,21 @@ function core.get(path, handler) core.match("GET", path, handler) end
 -- Updated Dispatcher
 function core.handle_request(req)
     local method = req.method:upper()
-    if core.routes[method] and core.routes[method][req.url] then
-        local result = core.routes[method][req.url](req)
+    local handler = core.routes[method] and core.routes[method][req.url]
+    
+    if handler then
+        local result = handler(req)
 
-        -- Convert the chainable object back to a plain table for C
+        -- If the user returned a simple string, wrap it in a default response
+        if type(result) == "string" then
+            result = create_response(result)
+        end
+
+        -- Ensure it's a table before returning to C
         return {
-            status = result.status_code,
-            body = result.body,
-            headers = result.headers
+            status = result.status_code or 200,
+            body = result.body or "",
+            headers = result.headers or {}
         }
     end
     return { status = 404, body = "Not Found", headers = {} }

@@ -1,8 +1,10 @@
 app = require("core")
 
 
-app.get("/test2", function (req)
-    return app.render("index", {method = 1})
-        :status(200)
-        :header("Content-Type", "text/html")
+app.get("/", function(req)
+    return "CardDAV root reached!"
+end)
+
+app.get("/test", function(req)
+    return "CardDAV test reached!"
 end)
