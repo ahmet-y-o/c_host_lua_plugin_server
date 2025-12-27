@@ -27,194 +27,62 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
                         const char *version, const char *upload_data,
                         size_t *upload_data_size, void **con_cls) {
 
+  PluginManager *pm = (PluginManager *)closure;
   struct MHD_Response *response = NULL;
   int status_code = 200;
 
-  PluginManager *pm = (PluginManager *)closure;
-
+  // 1. TRY SPECIFIC PLUGINS
   for (int i = 0; i < pm->count; i++) {
-    const char *p_name = pm->list[i]->name;
-    size_t name_len = strlen(p_name);
-    const char *relative_url = url + 1 + name_len;
+    Plugin *p = pm->list[i];
+    if (strcmp(p->name, "default") == 0)
+      continue;
 
-    // 1. Check if URL starts with "/plugin_name"
-    if (url[0] == '/' && strncmp(url + 1, p_name, name_len) == 0) {
-      const char *after_plugin =
-          url + 1 + name_len; // Pointing at what's after "/carddav"
+    size_t len = strlen(p->name);
+    if (url[0] == '/' && strncmp(url + 1, p->name, len) == 0) {
+      const char *after = url + 1 + len;
 
-      // CHECK FOR STATIC BYPASS: Does it start with "/static/"?
-      if (strncmp(after_plugin, "/static/", 8) == 0) {
-        const char *filename = after_plugin + 8; // The part after "/static/"
-
-        // 1. Build the absolute path to the file
-        char file_path[512];
-        snprintf(file_path, sizeof(file_path), "%s/static/%s",
-                 pm->list[i]->path, filename);
-
-        // 2. Try to serve it directly from C
-        if (serve_static_file(file_path, connection) == MHD_YES) {
-          return MHD_YES; // Success! No Lua needed.
-        }
-
-        // If file doesn't exist, we can either fall through to 404 or let Lua
-        // try
+      // Static check
+      if (strncmp(after, "/static/", 8) == 0) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/static/%s", p->path, after + 8);
+        if (serve_static_file(path, connection) == MHD_YES)
+          return MHD_YES;
       }
 
-      // Check if it's exactly "/name" or starts with "/name/"
-      char next_char = url[name_len + 1];
-      if (next_char == '\0' || next_char == '/') {
-
-        const char *relative_url = url + 1 + name_len;
-        if (relative_url[0] == '\0')
-          relative_url = "/";
-
-        lua_State *L = pm->list[i]->L;
-        lua_getglobal(L, "app");
-        if (!lua_istable(L, -1)) {
-          lua_pop(L, 1);
-          continue;
-        }
-
-        lua_getfield(L, -1, "handle_request");
-
-        lua_newtable(L);
-        lua_pushstring(L, "url");
-        lua_pushstring(L, relative_url); // Use the stripped version
-        lua_settable(L, -3);
-        lua_pushstring(L, "method");
-        lua_pushstring(L, method);
-        lua_settable(L, -3);
-        printf("Plugin: %s | Sending to Lua: %s\n", p_name, relative_url);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-          fprintf(stderr, "Lua Error: %s\n", lua_tostring(L, -1));
-          lua_pop(L, 2);
-          continue;
-        }
-
-        if (lua_istable(L, -1)) {
-          // Get Status
-          lua_getfield(L, -1, "status");
-          status_code = (int)luaL_optinteger(L, -1, 200);
-          lua_pop(L, 1);
-
-          // Get Body
-          lua_getfield(L, -1, "body");
-          size_t body_len;
-          const char *body_str = lua_tolstring(L, -1, &body_len);
-          puts(body_str);
-          response = MHD_create_response_from_buffer(body_len, (void *)body_str,
-                                                     MHD_RESPMEM_MUST_COPY);
-          lua_pop(L, 1);
-
-          // Get Headers
-          lua_getfield(L, -1, "headers");
-          if (lua_istable(L, -1)) {
-            lua_pushnil(L);
-            while (lua_next(L, -2)) {
-              MHD_add_response_header(response, lua_tostring(L, -2),
-                                      lua_tostring(L, -1));
-              lua_pop(L, 1);
-            }
-          }
-          lua_pop(L, 1); // pop headers
-          lua_pop(L, 2); // pop result table and 'app' table
-
-          break; // Match found, exit loop
-        }
-        lua_pop(L, 2);
-      }
+      // Lua check (Normalize URL to "/" if empty after name)
+      const char *rel_url = (*after == '\0') ? "/" : after;
+      response = call_plugin_logic(p, rel_url, method, &status_code);
+      if (response)
+        break;
     }
   }
-  if (response == NULL) {
-    // --- 2. FALLBACK TO DEFAULT PLUGIN ---
+
+  // 2. FALLBACK TO DEFAULT
+  if (!response) {
     for (int i = 0; i < pm->count; i++) {
       if (strcmp(pm->list[i]->name, "default") == 0) {
-
-        // For the default plugin, we pass the URL exactly as is
-        // We don't strip anything because there is no prefix.
-
-        // Check for static first: /static/style.css
         if (strncmp(url, "/static/", 8) == 0) {
-          char full_path[1024];
-          snprintf(full_path, sizeof(full_path), "%s/static/%s",
-                   pm->list[i]->path, url + 8);
-          if (serve_static_file(full_path, connection) == MHD_YES)
+          char path[512];
+          snprintf(path, sizeof(path), "%s/static/%s", pm->list[i]->path,
+                   url + 8);
+          if (serve_static_file(path, connection) == MHD_YES)
             return MHD_YES;
         }
-
-        // Otherwise, call Lua handle_request
-        // Note: Pass the original 'url' here!
-
-        lua_State *L = pm->list[i]->L;
-        lua_getglobal(L, "app");
-        if (!lua_istable(L, -1)) {
-          lua_pop(L, 1);
-          continue;
-        }
-
-        lua_getfield(L, -1, "handle_request");
-
-        lua_newtable(L);
-        lua_pushstring(L, "url");
-        lua_pushstring(L, url); // Use the stripped version
-        lua_settable(L, -3);
-        lua_pushstring(L, "method");
-        lua_pushstring(L, method);
-        lua_settable(L, -3);
-
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-          fprintf(stderr, "Lua Error: %s\n", lua_tostring(L, -1));
-          lua_pop(L, 2);
-          continue;
-        }
-
-        if (lua_istable(L, -1)) {
-          // Get Status
-          lua_getfield(L, -1, "status");
-          status_code = (int)luaL_optinteger(L, -1, 200);
-          lua_pop(L, 1);
-
-          // Get Body
-          lua_getfield(L, -1, "body");
-          size_t body_len;
-          const char *body_str = lua_tolstring(L, -1, &body_len);
-          response = MHD_create_response_from_buffer(body_len, (void *)body_str,
-                                                     MHD_RESPMEM_MUST_COPY);
-          lua_pop(L, 1);
-
-          // Get Headers
-          lua_getfield(L, -1, "headers");
-          if (lua_istable(L, -1)) {
-            lua_pushnil(L);
-            while (lua_next(L, -2)) {
-              MHD_add_response_header(response, lua_tostring(L, -2),
-                                      lua_tostring(L, -1));
-              lua_pop(L, 1);
-            }
-          }
-          lua_pop(L, 1); // pop headers
-          lua_pop(L, 2); // pop result table and 'app' table
-
-          break;
-        }
-        lua_pop(L, 2);
+        response = call_plugin_logic(pm->list[i], url, method, &status_code);
+        break;
       }
     }
   }
-  // --- 3. FINAL QUEUEING ---
-  if (response != NULL) {
-    // A plugin (specific or default) successfully created a response
-    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
-    MHD_destroy_response(response);
-    return ret;
+
+  // 3. SEND RESPONSE OR 404
+  if (!response) {
+    status_code = 404;
+    response = MHD_create_response_from_buffer(13, "Not Found 404",
+                                               MHD_RESPMEM_MUST_COPY);
   }
 
-  // --- 4. ULTIMATE 404 ---
-  // If even 'default' isn't there or failed
-  struct MHD_Response *res = MHD_create_response_from_buffer(
-      13, "Not Found 404", MHD_RESPMEM_MUST_COPY);
-  enum MHD_Result ret = MHD_queue_response(connection, 404, res);
-  MHD_destroy_response(res);
+  enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
+  MHD_destroy_response(response);
   return ret;
 }
 
@@ -254,4 +122,66 @@ enum MHD_Result serve_static_file(const char *path,
   enum MHD_Result ret = MHD_queue_response(connection, 200, response);
   MHD_destroy_response(response);
   return ret;
+}
+
+// Helper: Extracts data from the Lua 'result' table and builds an MHD response
+struct MHD_Response *build_response_from_lua(lua_State *L, int *status_out) {
+  if (!lua_istable(L, -1))
+    return NULL;
+
+  // 1. Status
+  lua_getfield(L, -1, "status");
+  *status_out = (int)luaL_optinteger(L, -1, 200);
+  lua_pop(L, 1);
+
+  // 2. Body
+  lua_getfield(L, -1, "body");
+  size_t body_len;
+  const char *body_str = lua_tolstring(L, -1, &body_len);
+  struct MHD_Response *response = MHD_create_response_from_buffer(
+      body_len, (void *)body_str, MHD_RESPMEM_MUST_COPY);
+  lua_pop(L, 1);
+
+  // 3. Headers
+  lua_getfield(L, -1, "headers");
+  if (lua_istable(L, -1)) {
+    lua_pushnil(L);
+    while (lua_next(L, -2)) {
+      MHD_add_response_header(response, lua_tostring(L, -2),
+                              lua_tostring(L, -1));
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1); // pop headers
+  return response;
+}
+
+// Helper: Sets up the 'req' table and calls handle_request
+struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
+                                       const char *method, int *status_out) {
+  lua_State *L = p->L;
+  lua_getglobal(L, "app");
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    return NULL;
+  }
+
+  lua_getfield(L, -1, "handle_request");
+  lua_newtable(L);
+  lua_pushstring(L, "url");
+  lua_pushstring(L, url);
+  lua_settable(L, -3);
+  lua_pushstring(L, "method");
+  lua_pushstring(L, method);
+  lua_settable(L, -3);
+
+  if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+    fprintf(stderr, "Lua Error: %s\n", lua_tostring(L, -1));
+    lua_pop(L, 2); // pop error and app table
+    return NULL;
+  }
+
+  struct MHD_Response *res = build_response_from_lua(L, status_out);
+  lua_pop(L, 2); // pop result and app table
+  return res;
 }

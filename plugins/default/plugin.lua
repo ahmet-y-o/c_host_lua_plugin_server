@@ -7,6 +7,6 @@ app.get("/", function (req)
 end)
 
 app.get("/test", function (req)
-    return app.render("index", {})
+    return app.render("index", {hello = "hello mars"})
         :status(200)        
 end)
