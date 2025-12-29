@@ -12,6 +12,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(MICROHTTPD REQUIRED libmicrohttpd)
 find_package(Lua REQUIRED)
 
+# Add the Threads package
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 # 3. Include Directories
 include_directories(include ${LUA_INCLUDE_DIR} ${MICROHTTPD_INCLUDE_DIRS})
 
@@ -29,6 +33,7 @@ target_link_libraries(main.out
     PRIVATE 
     ${LUA_LIBRARIES} 
     ${MICROHTTPD_LIBRARIES}
+    Threads::Threads
 )
 
 # 6.1. Define a custom target that performs the copy

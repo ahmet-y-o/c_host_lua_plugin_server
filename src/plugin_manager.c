@@ -6,6 +6,8 @@
 #include "plugin_manager.h"
 #include "etlua_src.h"
 #include "applua_src.h"
+#include <pthread.h>
+#include <time.h>
 
 PluginManager* create_manager() {
 
@@ -206,19 +208,27 @@ void preload_module(lua_State *L, const char *name, const char *source) {
 
 #include <time.h>
 
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 // 1. The C function that does the actual logging
 int l_log(lua_State *L) {
     const char *level = luaL_checkstring(L, 1);
     const char *msg = luaL_checkstring(L, 2);
     
+    // Generate timestamp
     time_t now;
     time(&now);
     char timestamp[20];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    struct tm *tm_info = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
 
-    // You could easily swap this to write to a file or syslog
+    // --- CRITICAL SECTION START ---
+    pthread_mutex_lock(&log_mutex);
+    
     fprintf(stdout, "[%s] [%s] %s\n", timestamp, level, msg);
-    fflush(stdout); 
+    fflush(stdout); // Force output so logs appear in real-time
+    
+    pthread_mutex_unlock(&log_mutex);
+    // --- CRITICAL SECTION END ---
     
     return 0;
 }
@@ -228,4 +238,23 @@ int l_log(lua_State *L) {
 void register_logger(lua_State *L) {
     lua_pushcfunction(L, l_log);
     lua_setglobal(L, "c_log"); // Expose to Lua as a global
+}
+
+void server_log(const char *level, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    time_t now;
+    time(&now);
+    char timestamp[20];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    pthread_mutex_lock(&log_mutex);
+    printf("[%s] [%s] ", timestamp, level);
+    vprintf(fmt, args);
+    printf("\n");
+    fflush(stdout);
+    pthread_mutex_unlock(&log_mutex);
+
+    va_end(args);
 }
