@@ -21,4 +21,10 @@ void destroy_manager(PluginManager *pm);
 Plugin* create_plugin(char *name, char *path);
 void refresh_plugins(PluginManager *pm);
 void preload_module(lua_State *L, const char *name, const char *source);
+int l_log(lua_State *L);
+void register_logger(lua_State *L);
+
+
+
+
 #endif

@@ -41,8 +41,7 @@ function core.render(view_name, data)
     -- 4. Safe File Loading
     local f = io.open(path, "r")
     if not f then
-        -- Log to C stderr for debugging, return 404/500 to browser
-        io.stderr:write("Render Error: File not found at " .. path .. "\n")
+        core.error("Render Error: File not found at " .. path) -- Use logger!
         return create_response("Template not found"):status(500)
     end
 
@@ -76,11 +75,16 @@ function core.get(path, handler) core.match("GET", path, handler) end
 
 -- Updated Dispatcher
 function core.handle_request(req)
+    core.info(req.method .. " " .. req.url)
     local method = req.method:upper()
     local handler = core.routes[method] and core.routes[method][req.url]
     
     if handler then
-        local result = handler(req)
+        local ok, result = pcall(handler, req)
+        if not ok then
+            core.error("Handler Error: " .. tostring(result))
+            return { status = 500, body = "Internal Server Error", headers = {} }
+        end
 
         -- If the user returned a simple string, wrap it in a default response
         if type(result) == "string" then
@@ -96,5 +100,22 @@ function core.handle_request(req)
     end
     return { status = 404, body = "Not Found", headers = {} }
 end
+
+
+
+-- Wrapper for the C-logging function
+function core.log(level, msg)
+    if c_log then
+        c_log(level:upper(), tostring(msg))
+    else
+        -- Fallback if not running inside the C host
+        print("[" .. level:upper() .. "] " .. tostring(msg))
+    end
+end
+
+-- Syntax sugar for different levels
+function core.info(msg)  core.log("INFO", msg) end
+function core.warn(msg)  core.log("WARN", msg) end
+function core.error(msg) core.log("ERROR", msg) end
 
 return core

@@ -71,6 +71,7 @@ Plugin* create_plugin(char *name, char *path) {
     luaL_openlibs(p->L);
     preload_module(p->L, "etlua", etlua_source);
     preload_module(p->L, "core", app_lua_source);
+    register_logger(p->L);
 
 
     // 1. Load the file (compiles it to a chunk on the stack)
@@ -201,4 +202,30 @@ void preload_module(lua_State *L, const char *name, const char *source) {
 
     // Clean up stack (pop preload and package)
     lua_pop(L, 2);
+}
+
+#include <time.h>
+
+// 1. The C function that does the actual logging
+int l_log(lua_State *L) {
+    const char *level = luaL_checkstring(L, 1);
+    const char *msg = luaL_checkstring(L, 2);
+    
+    time_t now;
+    time(&now);
+    char timestamp[20];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    // You could easily swap this to write to a file or syslog
+    fprintf(stdout, "[%s] [%s] %s\n", timestamp, level, msg);
+    fflush(stdout); 
+    
+    return 0;
+}
+
+// 2. Modify your plugin initialization (wherever you create the lua_State)
+// You need to call this before running any plugin scripts
+void register_logger(lua_State *L) {
+    lua_pushcfunction(L, l_log);
+    lua_setglobal(L, "c_log"); // Expose to Lua as a global
 }
