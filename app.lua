@@ -2,6 +2,14 @@ local core = {}
 core.routes = {}
 local etlua = require("etlua")
 
+function core.on(event_name, callback_name)
+    c_register_hook(event_name, callback_name)
+end
+
+function core.emit(event_name, data)
+    c_call_hook(event_name, data or {})
+end
+
 local function parse_route(path)
     local param_names = {}
     
@@ -98,6 +106,8 @@ function core.match(method, path, handler)
 end
 
 function core.get(path, handler) core.match("GET", path, handler) end
+function core.post(path, handler) core.match("POST", path, handler) end
+
 
 -- Updated Dispatcher
 function core.handle_request(req)

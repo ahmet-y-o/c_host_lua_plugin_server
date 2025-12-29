@@ -10,15 +10,25 @@
 #include <string.h>
 #include <sys/stat.h>
 
+typedef struct {
+  char *data;
+  size_t size;
+} PostBuffer;
+
+void request_completed(void *cls, struct MHD_Connection *connection,
+                       void **con_cls, enum MHD_RequestTerminationCode toe) {
+  PostBuffer *buffer = (PostBuffer *)*con_cls;
+  if (buffer) {
+    if (buffer->data)
+      free(buffer->data);
+    free(buffer);
+  }
+}
+
 struct MHD_Daemon *start_server(PluginManager *pm) {
-  struct MHD_Daemon *daemon;
-  daemon = MHD_start_daemon(MHD_USE_INTERNAL_POLLING_THREAD,
-                            8888, // port
-                            NULL, NULL,
-                            respond, // callback function
-                            pm,      // closure (pass data here)
-                            MHD_OPTION_END);
-  return daemon;
+  return MHD_start_daemon(MHD_USE_INTERNAL_POLLING_THREAD, 8888, NULL, NULL,
+                          &respond, pm, MHD_OPTION_NOTIFY_COMPLETED,
+                          &request_completed, NULL, MHD_OPTION_END);
 }
 
 // This function is called for every incoming request
@@ -26,6 +36,22 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
                         const char *url, const char *method,
                         const char *version, const char *upload_data,
                         size_t *upload_data_size, void **con_cls) {
+
+  if (*con_cls == NULL) {
+    PostBuffer *buffer = calloc(1, sizeof(PostBuffer));
+    *con_cls = buffer;
+    return MHD_YES;
+  }
+  PostBuffer *buffer = (PostBuffer *)*con_cls;
+  // 2. Accumulate data if it's arriving
+  if (*upload_data_size > 0) {
+    buffer->data = realloc(buffer->data, buffer->size + *upload_data_size + 1);
+    memcpy(buffer->data + buffer->size, upload_data, *upload_data_size);
+    buffer->size += *upload_data_size;
+    buffer->data[buffer->size] = '\0'; // Null terminate
+    *upload_data_size = 0;             // Tell MHD we consumed the data
+    return MHD_YES;
+  }
 
   PluginManager *pm = (PluginManager *)closure;
   struct MHD_Response *response = NULL;
@@ -45,13 +71,15 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
       if (strncmp(after, "/static/", 8) == 0) {
         char path[512];
         snprintf(path, sizeof(path), "%s/static/%s", p->path, after + 8);
-        if (serve_static_file(path, connection) == MHD_YES)
-          return MHD_YES;
+        enum MHD_Result ret = serve_static_file(path, connection);
+        if (ret == MHD_YES)
+          return MHD_YES; // request_completed will handle buffer
       }
 
       // Lua check (Normalize URL to "/" if empty after name)
       const char *rel_url = (*after == '\0') ? "/" : after;
-      response = call_plugin_logic(p, rel_url, method, &status_code);
+      response = call_plugin_logic(p, rel_url, method, &status_code,
+                                   buffer->data, buffer->size);
       if (response)
         break;
     }
@@ -65,10 +93,12 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
           char path[512];
           snprintf(path, sizeof(path), "%s/static/%s", pm->list[i]->path,
                    url + 8);
-          if (serve_static_file(path, connection) == MHD_YES)
+          enum MHD_Result ret = serve_static_file(path, connection);
+          if (ret == MHD_YES)
             return MHD_YES;
         }
-        response = call_plugin_logic(pm->list[i], url, method, &status_code);
+        response = call_plugin_logic(pm->list[i], url, method, &status_code,
+                                     buffer->data, buffer->size);
         break;
       }
     }
@@ -158,7 +188,8 @@ struct MHD_Response *build_response_from_lua(lua_State *L, int *status_out) {
 
 // Helper: Sets up the 'req' table and calls handle_request
 struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
-                                       const char *method, int *status_out) {
+                                       const char *method, int *status_out,
+                                       char *body_data, size_t body_len) {
   lua_State *L = p->L;
   lua_getglobal(L, "app");
   if (!lua_istable(L, -1)) {
@@ -174,6 +205,13 @@ struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
   lua_pushstring(L, "method");
   lua_pushstring(L, method);
   lua_settable(L, -3);
+  lua_pushstring(L, "body");
+  if (body_data) {
+    lua_pushlstring(L, body_data, body_len); // Use lstring for binary safety
+  } else {
+    lua_pushstring(L, "");
+  }
+  lua_settable(L, -3);
 
   if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
     fprintf(stderr, "Lua Error: %s\n", lua_tostring(L, -1));
@@ -185,3 +223,4 @@ struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
   lua_pop(L, 2); // pop result and app table
   return res;
 }
+

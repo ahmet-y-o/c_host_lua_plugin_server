@@ -12,6 +12,7 @@ enum MHD_Result respond(void *cls, struct MHD_Connection *connection,
 enum MHD_Result serve_static_file(const char *path, struct MHD_Connection *connection);
 const char* get_mime_type(const char *path);
 struct MHD_Response* build_response_from_lua(lua_State *L, int *status_out);
-struct MHD_Response* call_plugin_logic(Plugin *p, const char *url, const char *method, int *status_out);
+struct MHD_Response* call_plugin_logic(Plugin *p, const char *url,
+                                       const char *method, int *status_out, char *body_data, size_t body_len);
 
 #endif

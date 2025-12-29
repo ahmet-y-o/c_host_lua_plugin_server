@@ -7,13 +7,13 @@ app.get("/", function(req)
 end)
 
 app.get("/test", function(req)
+    app.emit("audit_log", { message = "User accessed addressbook: " })
     return "CardDAV test reached!"
 end)
 
-app.get("/[test]", function(req)
-    return "CardDAV route " .. (req.params.test or "unknown") .. " reached!"
-end)
-
-app.get("/[test]/[hello]", function(req)
-    return "CardDAV hello " .. (req.params.test or "unknown") .. " reached!"
+app.post("/posttest", function(req)
+    app.info("Method: " .. req.method)
+    app.info("Body Length: " .. #req.body)
+    app.info("Body Content: " .. req.body)
+    return "Post data is " .. req.body
 end)
