@@ -1,6 +1,27 @@
 local core = {}
 core.routes = {}
 local etlua = require("etlua")
+
+local function parse_route(path)
+    local param_names = {}
+    
+    -- 1. Save the parameter names first
+    for name in path:gmatch("%[([^%]]+)%]") do
+        table.insert(param_names, name)
+    end
+
+    -- 2. Escape special Lua characters (. % + - * ? ^ $ etc.)
+    -- but EXCLUDE the brackets [ ] for a moment so we can find them easily
+    local pattern = path:gsub("([%(%)%.%%%+%-%*%?%^%$])", "%%%1")
+    
+    -- 3. Now replace [something] with the capture group ([^/]+)
+    -- We use .- for a non-greedy match inside the brackets
+    pattern = pattern:gsub("%[.-%]", "([^/]+)")
+    
+    return "^" .. pattern .. "$", param_names
+end
+
+
 -- Helper to create a response object with chainable methods
 -- Internal helper to create the chainable response
 local function create_response(body)
@@ -66,38 +87,49 @@ end
 
 -- Routing logic
 function core.match(method, path, handler)
-    method = method:upper()
-    core.routes[method] = core.routes[method] or {}
-    core.routes[method][path] = handler
+    local pattern, keys = parse_route(path)
+    core.info("Registering route: " .. path .. " as pattern: " .. pattern)
+    table.insert(core.routes, {
+        method = method:upper(),
+        pattern = pattern,
+        keys = keys,
+        handler = handler
+    })
 end
 
 function core.get(path, handler) core.match("GET", path, handler) end
 
 -- Updated Dispatcher
 function core.handle_request(req)
-    core.info(req.method .. " " .. req.url)
     local method = req.method:upper()
-    local handler = core.routes[method] and core.routes[method][req.url]
     
-    if handler then
-        local ok, result = pcall(handler, req)
-        if not ok then
-            core.error("Handler Error: " .. tostring(result))
-            return { status = 500, body = "Internal Server Error", headers = {} }
-        end
+    for _, route in ipairs(core.routes) do
+        if route.method == method then
+            -- match() returns all captures as multiple return values
+            local matches = { req.url:match(route.pattern) }
+            
+            if #matches > 0 then
+                req.params = {}
+                for i, name in ipairs(route.keys) do
+                    req.params[name] = matches[i]
+                end
 
-        -- If the user returned a simple string, wrap it in a default response
-        if type(result) == "string" then
-            result = create_response(result)
-        end
+                local result = route.handler(req)
+                
+                -- Wrap simple string responses
+                if type(result) == "string" then
+                    result = { status_code = 200, body = result, headers = {["Content-Type"]="text/html"} }
+                end
 
-        -- Ensure it's a table before returning to C
-        return {
-            status = result.status_code or 200,
-            body = result.body or "",
-            headers = result.headers or {}
-        }
+                return {
+                    status = result.status_code or 200,
+                    body = result.body or "",
+                    headers = result.headers or {}
+                }
+            end
+        end
     end
+    
     return { status = 404, body = "Not Found", headers = {} }
 end
 

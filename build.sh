@@ -1,2 +1,2 @@
 #!/bin/sh
-gcc -I./include src/main.c src/plugin_manager.c src/server.c -o main.out -lmicrohttpd -llua
+python3 lua_to_header.py app.lua ./include/applua_src.h

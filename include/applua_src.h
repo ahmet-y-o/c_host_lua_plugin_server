@@ -1,128 +1,163 @@
-/* Auto-generated from ../app.lua */
+/* Auto-generated from app.lua */
 #ifndef APP_LUA_H
 #define APP_LUA_H
 
-const char* app_lua_source =
-    "local core = {}\n"
-    "core.routes = {}\n"
-    "local etlua = require(\"etlua\")\n"
-    "-- Helper to create a response object with chainable methods\n"
-    "-- Internal helper to create the chainable response\n"
-    "local function create_response(body)\n"
-    "    local resp = {\n"
-    "        status_code = 200,\n"
-    "        body = body or \"\",\n"
-    "        headers = { [\"Content-Type\"] = \"text/html\" }\n"
-    "    }\n"
-    "    function resp:status(code)\n"
-    "        self.status_code = code; return self\n"
-    "    end\n"
-    "\n"
-    "    function resp:header(k, v)\n"
-    "        self.headers[k] = v; return self\n"
-    "    end\n"
-    "\n"
-    "    function resp:type(mime_type)\n"
-    "        self.headers[\"Content-Type\"] = mime_type\n"
-    "        return self\n"
-    "    end\n"
-    "\n"
-    "    return resp\n"
-    "end\n"
-    "\n"
-    "-- Render function\n"
-    "function core.render(view_name, data)\n"
-    "    -- 1. Security Check: Block directory traversal attempts\n"
-    "    if view_name:find(\"%.%.\") then\n"
-    "        return create_response(\"Security Error: Invalid view name\"):status(403)\n"
-    "    end\n"
-    "\n"
-    "    -- 2. Normalize PLUGIN_DIR: Remove trailing slash if it exists, then add one\n"
-    "    local base_path = PLUGIN_DIR:gsub(\"/$\", \"\") .. \"/\"\n"
-    "\n"
-    "    -- 3. Construct absolute path\n"
-    "    local path = base_path .. \"views/\" .. view_name .. \".etlua\"\n"
-    "\n"
-    "    -- 4. Safe File Loading\n"
-    "    local f = io.open(path, \"r\")\n"
-    "    if not f then\n"
-    "        core.error(\"Render Error: File not found at \" .. path) -- Use logger!\n"
-    "        return create_response(\"Template not found\"):status(500)\n"
-    "    end\n"
-    "\n"
-    "    local content = f:read(\"*a\")\n"
-    "    f:close()\n"
-    "\n"
-    "    -- 5. Robust Compilation & Execution\n"
-    "    -- We use pcall to ensure a Lua error in the template doesn't crash the request\n"
-    "    local ok_compile, template = pcall(etlua.compile, content)\n"
-    "    if not ok_compile then\n"
-    "        return create_response(\"Template Syntax Error: \" .. tostring(template)):status(500)\n"
-    "    end\n"
-    "\n"
-    "    local ok_render, html = pcall(template, data)\n"
-    "    if not ok_render then\n"
-    "        return create_response(\"Template Runtime Error: \" .. tostring(html)):status(500)\n"
-    "    end\n"
-    "\n"
-    "    -- Explicitly set HTML type since we are rendering a template\n"
-    "    return create_response(html):type(\"text/html\")\n"
-    "end\n"
-    "\n"
-    "-- Routing logic\n"
-    "function core.match(method, path, handler)\n"
-    "    method = method:upper()\n"
-    "    core.routes[method] = core.routes[method] or {}\n"
-    "    core.routes[method][path] = handler\n"
-    "end\n"
-    "\n"
-    "function core.get(path, handler) core.match(\"GET\", path, handler) end\n"
-    "\n"
-    "-- Updated Dispatcher\n"
-    "function core.handle_request(req)\n"
-    "    core.info(req.method .. \" \" .. req.url)\n"
-    "    local method = req.method:upper()\n"
-    "    local handler = core.routes[method] and core.routes[method][req.url]\n"
-    "    \n"
-    "    if handler then\n"
-    "        local ok, result = pcall(handler, req)\n"
-    "        if not ok then\n"
-    "            core.error(\"Handler Error: \" .. tostring(result))\n"
-    "            return { status = 500, body = \"Internal Server Error\", headers = {} }\n"
-    "        end\n"
-    "\n"
-    "        -- If the user returned a simple string, wrap it in a default response\n"
-    "        if type(result) == \"string\" then\n"
-    "            result = create_response(result)\n"
-    "        end\n"
-    "\n"
-    "        -- Ensure it's a table before returning to C\n"
-    "        return {\n"
-    "            status = result.status_code or 200,\n"
-    "            body = result.body or \"\",\n"
-    "            headers = result.headers or {}\n"
-    "        }\n"
-    "    end\n"
-    "    return { status = 404, body = \"Not Found\", headers = {} }\n"
-    "end\n"
-    "\n"
-    "\n"
-    "\n"
-    "-- Wrapper for the C-logging function\n"
-    "function core.log(level, msg)\n"
-    "    if c_log then\n"
-    "        c_log(level:upper(), tostring(msg))\n"
-    "    else\n"
-    "        -- Fallback if not running inside the C host\n"
-    "        print(\"[\" .. level:upper() .. \"] \" .. tostring(msg))\n"
-    "    end\n"
-    "end\n"
-    "\n"
-    "-- Syntax sugar for different levels\n"
-    "function core.info(msg)  core.log(\"INFO\", msg) end\n"
-    "function core.warn(msg)  core.log(\"WARN\", msg) end\n"
-    "function core.error(msg) core.log(\"ERROR\", msg) end\n"
-    "\n"
-    "return core\n";
+const char* app_lua_source = R"lua(
+local core = {}
+core.routes = {}
+local etlua = require("etlua")
+
+local function parse_route(path)
+    local param_names = {}
+    
+    -- 1. Save the parameter names first
+    for name in path:gmatch("%[([^%]]+)%]") do
+        table.insert(param_names, name)
+    end
+
+    -- 2. Escape special Lua characters (. % + - * ? ^ $ etc.)
+    -- but EXCLUDE the brackets [ ] for a moment so we can find them easily
+    local pattern = path:gsub("([%(%)%.%%%+%-%*%?%^%$])", "%%%1")
+    
+    -- 3. Now replace [something] with the capture group ([^/]+)
+    -- We use .- for a non-greedy match inside the brackets
+    pattern = pattern:gsub("%[.-%]", "([^/]+)")
+    
+    return "^" .. pattern .. "$", param_names
+end
+
+
+-- Helper to create a response object with chainable methods
+-- Internal helper to create the chainable response
+local function create_response(body)
+    local resp = {
+        status_code = 200,
+        body = body or "",
+        headers = { ["Content-Type"] = "text/html" }
+    }
+    function resp:status(code)
+        self.status_code = code; return self
+    end
+
+    function resp:header(k, v)
+        self.headers[k] = v; return self
+    end
+
+    function resp:type(mime_type)
+        self.headers["Content-Type"] = mime_type
+        return self
+    end
+
+    return resp
+end
+
+-- Render function
+function core.render(view_name, data)
+    -- 1. Security Check: Block directory traversal attempts
+    if view_name:find("%.%.") then
+        return create_response("Security Error: Invalid view name"):status(403)
+    end
+
+    -- 2. Normalize PLUGIN_DIR: Remove trailing slash if it exists, then add one
+    local base_path = PLUGIN_DIR:gsub("/$", "") .. "/"
+
+    -- 3. Construct absolute path
+    local path = base_path .. "views/" .. view_name .. ".etlua"
+
+    -- 4. Safe File Loading
+    local f = io.open(path, "r")
+    if not f then
+        core.error("Render Error: File not found at " .. path) -- Use logger!
+        return create_response("Template not found"):status(500)
+    end
+
+    local content = f:read("*a")
+    f:close()
+
+    -- 5. Robust Compilation & Execution
+    -- We use pcall to ensure a Lua error in the template doesn't crash the request
+    local ok_compile, template = pcall(etlua.compile, content)
+    if not ok_compile then
+        return create_response("Template Syntax Error: " .. tostring(template)):status(500)
+    end
+
+    local ok_render, html = pcall(template, data)
+    if not ok_render then
+        return create_response("Template Runtime Error: " .. tostring(html)):status(500)
+    end
+
+    -- Explicitly set HTML type since we are rendering a template
+    return create_response(html):type("text/html")
+end
+
+-- Routing logic
+function core.match(method, path, handler)
+    local pattern, keys = parse_route(path)
+    core.info("Registering route: " .. path .. " as pattern: " .. pattern)
+    table.insert(core.routes, {
+        method = method:upper(),
+        pattern = pattern,
+        keys = keys,
+        handler = handler
+    })
+end
+
+function core.get(path, handler) core.match("GET", path, handler) end
+
+-- Updated Dispatcher
+function core.handle_request(req)
+    local method = req.method:upper()
+    
+    for _, route in ipairs(core.routes) do
+        if route.method == method then
+            -- match() returns all captures as multiple return values
+            local matches = { req.url:match(route.pattern) }
+            
+            if #matches > 0 then
+                req.params = {}
+                for i, name in ipairs(route.keys) do
+                    req.params[name] = matches[i]
+                end
+
+                local result = route.handler(req)
+                
+                -- Wrap simple string responses
+                if type(result) == "string" then
+                    result = { status_code = 200, body = result, headers = {["Content-Type"]="text/html"} }
+                end
+
+                return {
+                    status = result.status_code or 200,
+                    body = result.body or "",
+                    headers = result.headers or {}
+                }
+            end
+        end
+    end
+    
+    return { status = 404, body = "Not Found", headers = {} }
+end
+
+
+
+-- Wrapper for the C-logging function
+function core.log(level, msg)
+    if c_log then
+        c_log(level:upper(), tostring(msg))
+    else
+        -- Fallback if not running inside the C host
+        print("[" .. level:upper() .. "] " .. tostring(msg))
+    end
+end
+
+-- Syntax sugar for different levels
+function core.info(msg)  core.log("INFO", msg) end
+function core.warn(msg)  core.log("WARN", msg) end
+function core.error(msg) core.log("ERROR", msg) end
+
+return core
+
+)lua";
+
 
 #endif /* APP_LUA_H */
