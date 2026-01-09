@@ -16,8 +16,8 @@ int main() {
 
     refresh_plugins(pm);
 
-    for (int i = 0; i < pm->count ; i++) {
-        printf("%s\t%s\n", pm->list[i]->name, pm->list[i]->path);
+    for (int i = 0; i < pm->plugin_count ; i++) {
+        printf("%s\t%s\n", pm->plugin_list[i]->name, pm->plugin_list[i]->path);
     }
 
     struct MHD_Daemon *daemon;

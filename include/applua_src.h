@@ -19,8 +19,8 @@ function core.emit(event_name, data)
     return c_call_hook(event_name, data or {})
 end
 
-function core.query(event_name, data)
-    return c_call_hook(event_name, data or {})
+function core.query(query_name, data)
+    return c_call_hook(query_name, data or {})
 end
 
 local function parse_route(path)

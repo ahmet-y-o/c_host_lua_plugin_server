@@ -11,9 +11,25 @@ typedef struct {
 } Plugin;
 
 typedef struct {
-    Plugin **list;
-    int count;
-    int capacity;
+    char *hook_name;
+    Plugin *plugin;
+    char *lua_func_name; // The function name within that plugin's Lua state
+    int priority; // Lower numbers = higher priority (runs sooner)
+} HookRegistration;
+/*
+extern HookRegistration hooks[256];
+extern int hook_count;
+*/
+typedef struct {
+    // plugin storage
+    Plugin **plugin_list;
+    int plugin_count;
+    int plugin_capacity;
+
+    // hook storage
+    HookRegistration **hook_list;
+    int hook_count;
+    int hook_capacity;
     
 } PluginManager;
 
@@ -25,15 +41,7 @@ void preload_module(lua_State *L, const char *name, const char *source);
 int l_log(lua_State *L);
 void register_logger(lua_State *L);
 
-typedef struct {
-    char *hook_name;
-    Plugin *plugin;
-    char *lua_func_name; // The function name within that plugin's Lua state
-    int priority; // Lower numbers = higher priority (runs sooner)
-} HookRegistration;
 
-extern HookRegistration hooks[256];
-extern int hook_count;
 
 // C function exposed to Lua: plugin_register_hook("hook_name", "lua_function")
 int l_register_hook(lua_State *L);

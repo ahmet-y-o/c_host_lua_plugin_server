@@ -8,13 +8,14 @@ local warehouse = {
 
 function handle_get_stock(data)
     print("invoking stock data")
-    return warehouse
+    return "warehouse"
 end
-app.on_query("inventory_get", "handle_get_stock")
 
 app.get("/", function (req)
-    app.emit("audit_log", { message= "test"})
+    app.query("audit_log")
     return app.render("index", {})
         :status(200)
     
 end)
+
+app.on_query("inv", "handle_get_stock")

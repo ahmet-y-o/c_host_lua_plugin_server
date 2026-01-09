@@ -58,8 +58,8 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
   int status_code = 200;
 
   // 1. TRY SPECIFIC PLUGINS
-  for (int i = 0; i < pm->count; i++) {
-    Plugin *p = pm->list[i];
+  for (int i = 0; i < pm->plugin_count; i++) {
+    Plugin *p = pm->plugin_list[i];
     if (strcmp(p->name, "default") == 0)
       continue;
 
@@ -87,17 +87,17 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
 
   // 2. FALLBACK TO DEFAULT
   if (!response) {
-    for (int i = 0; i < pm->count; i++) {
-      if (strcmp(pm->list[i]->name, "default") == 0) {
+    for (int i = 0; i < pm->plugin_count; i++) {
+      if (strcmp(pm->plugin_list[i]->name, "default") == 0) {
         if (strncmp(url, "/static/", 8) == 0) {
           char path[512];
-          snprintf(path, sizeof(path), "%s/static/%s", pm->list[i]->path,
+          snprintf(path, sizeof(path), "%s/static/%s", pm->plugin_list[i]->path,
                    url + 8);
           enum MHD_Result ret = serve_static_file(path, connection);
           if (ret == MHD_YES)
             return MHD_YES;
         }
-        response = call_plugin_logic(pm->list[i], url, method, &status_code,
+        response = call_plugin_logic(pm->plugin_list[i], url, method, &status_code,
                                      buffer->data, buffer->size);
         break;
       }

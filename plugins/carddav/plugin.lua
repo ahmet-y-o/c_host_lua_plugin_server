@@ -3,11 +3,11 @@ app = require("core")
 
 
 app.get("/", function(req)
-    return "CardDAV root reached!"
+    app.emit("audit_log", {message="helo"})
+    return app.emit("inv")
 end)
 
 app.get("/test", function(req)
-    app.emit("audit_log", { message = "User accessed addressbook: " })
     return "CardDAV test reached!"
 end)
 
