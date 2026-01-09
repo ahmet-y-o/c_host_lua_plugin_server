@@ -7,12 +7,20 @@ local core = {}
 core.routes = {}
 local etlua = require("etlua")
 
-function core.on(event_name, callback_name)
+function core.on_event(event_name, callback_name)
     c_register_hook(event_name, callback_name)
 end
 
+function core.on_query(query_name, callback_name)
+    c_register_hook(query_name, callback_name)
+end
+
 function core.emit(event_name, data)
-    c_call_hook(event_name, data or {})
+    return c_call_hook(event_name, data or {})
+end
+
+function core.query(event_name, data)
+    return c_call_hook(event_name, data or {})
 end
 
 local function parse_route(path)
@@ -98,10 +106,13 @@ function core.render(view_name, data)
     return create_response(html):type("text/html")
 end
 
+function core.memory_kb()
+    return c_get_memory()
+end
+
 -- Routing logic
 function core.match(method, path, handler)
     local pattern, keys = parse_route(path)
-    core.info("Registering route: " .. path .. " as pattern: " .. pattern)
     table.insert(core.routes, {
         method = method:upper(),
         pattern = pattern,

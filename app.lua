@@ -1,13 +1,28 @@
 local core = {}
 core.routes = {}
+core.middlewares = {} -- List of middleware function names
 local etlua = require("etlua")
+
+-- Function for plugins to register middleware
+function core.use(func_name)
+    if type(func_name) ~= "string" then
+        core.error("Middleware must be a string (function name)")
+        return
+    end
+    table.insert(core.middlewares, func_name)
+end
+
 
 function core.on(event_name, callback_name)
     c_register_hook(event_name, callback_name)
 end
 
 function core.emit(event_name, data)
-    c_call_hook(event_name, data or {})
+    return c_call_hook(event_name, data or {})
+end
+
+function core.query(event_name, data)
+    return c_call_hook(event_name, data or {})
 end
 
 local function parse_route(path)
@@ -93,10 +108,13 @@ function core.render(view_name, data)
     return create_response(html):type("text/html")
 end
 
+function core.memory_kb()
+    return c_get_memory()
+end
+
 -- Routing logic
 function core.match(method, path, handler)
     local pattern, keys = parse_route(path)
-    core.info("Registering route: " .. path .. " as pattern: " .. pattern)
     table.insert(core.routes, {
         method = method:upper(),
         pattern = pattern,
@@ -111,6 +129,19 @@ function core.post(path, handler) core.match("POST", path, handler) end
 
 -- Updated Dispatcher
 function core.handle_request(req)
+    -- 1. RUN MIDDLEWARES
+    for _, m_name in ipairs(core.middlewares) do
+        local m_func = _G[m_name]
+        if m_func then
+            -- Middlewares receive the 'req' object
+            local response = m_func(req)
+            -- If a middleware returns a table, we stop and return it as the response
+            if type(response) == "table" and response.status then
+                return response
+            end
+        end
+    end
+
     local method = req.method:upper()
     
     for _, route in ipairs(core.routes) do

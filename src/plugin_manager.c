@@ -82,6 +82,8 @@ Plugin *create_plugin(char *name, char *path) {
   preload_module(p->L, "etlua", etlua_source);
   preload_module(p->L, "core", app_lua_source);
   register_logger(p->L);
+  lua_pushcfunction(p->L, l_get_mem_usage);
+  lua_setglobal(p->L, "c_get_memory");
 
   // Register l_register_hook with 1 upvalue (the Plugin pointer)
   lua_pushlightuserdata(p->L, p); // This becomes upvalue 1
@@ -288,11 +290,12 @@ void server_log(const char *level, const char *fmt, ...) {
 
 // C function exposed to Lua: plugin_register_hook("hook_name", "lua_function")
 int l_register_hook(lua_State *L) {
+
   if (hook_count >= 256) {
     luaL_error(L, "Hook limit reached (256)");
     return 0;
   }
-
+  int priority = (int)luaL_optinteger(L, 3, 100); // Default to 100
   const char *hook_name = luaL_checkstring(L, 1);
   const char *func_name = luaL_checkstring(L, 2);
 
@@ -307,61 +310,133 @@ int l_register_hook(lua_State *L) {
   hooks[hook_count].lua_func_name = strdup(func_name);
   hook_count++;
 
-  return 0;
-}
-
-// C function exposed to Lua: plugin_call_hook("hook_name", data_table)
-// Recursive helper to copy a value from L_from to L_to
-void copy_value(lua_State *L_from, lua_State *L_to, int idx) {
-  int type = lua_type(L_from, idx);
-  switch (type) {
-  case LUA_TSTRING:
-    lua_pushstring(L_to, lua_tostring(L_from, idx));
-    break;
-  case LUA_TNUMBER:
-    lua_pushnumber(L_to, lua_tonumber(L_from, idx));
-    break;
-  case LUA_TBOOLEAN:
-    lua_pushboolean(L_to, lua_toboolean(L_from, idx));
-    break;
-  case LUA_TTABLE:
-    lua_newtable(L_to);
-    lua_pushnil(L_from); // Start first key
-    while (lua_next(L_from, idx < 0 ? idx - 1 : idx) != 0) {
-      // Copy key (at -2) and value (at -1)
-      copy_value(L_from, L_to, -2);
-      copy_value(L_from, L_to, -1);
-      lua_settable(L_to, -3);
-      lua_pop(L_from, 1); // Pop value, keep key for next iteration
-    }
-    break;
-  default:
-    lua_pushnil(L_to); // Skip functions/userdata for safety
-    break;
-  }
-}
-
-int l_call_hook(lua_State *L) {
-  const char *hook_name = luaL_checkstring(L, 1);
-  // Argument 2 is the data table
-
-  for (int i = 0; i < hook_count; i++) {
-    if (strcmp(hooks[i].hook_name, hook_name) == 0) {
-      lua_State *targetL = hooks[i].plugin->L;
-
-      // Get the registered function in the target plugin
-      lua_getglobal(targetL, hooks[i].lua_func_name);
-
-      // Copy the data table from the caller to the listener
-      copy_value(L, targetL, 2);
-
-      // Call the function in the target state
-      if (lua_pcall(targetL, 1, 0, 0) != LUA_OK) {
-        fprintf(stderr, "Hook Error [%s]: %s\n", hooks[i].plugin->name,
-                lua_tostring(targetL, -1));
-        lua_pop(targetL, 1);
+  // Re-sort the array by priority every time a new hook is added
+  // This keeps the emit loop fast and simple
+  for (int i = 0; i < hook_count - 1; i++) {
+    for (int j = 0; j < hook_count - i - 1; j++) {
+      if (hooks[j].priority > hooks[j + 1].priority) {
+        HookRegistration temp = hooks[j];
+        hooks[j] = hooks[j + 1];
+        hooks[j + 1] = temp;
       }
     }
   }
+
   return 0;
+}
+
+void monitor_plugin_memory(PluginManager *pm) {
+  server_log("MONITOR", "--- Memory Usage Report ---");
+
+  for (int i = 0; i < pm->count; i++) {
+    Plugin *p = pm->list[i];
+
+    // lua_gc with LUA_GCCOUNT returns memory in Kbytes
+    int kbytes = lua_gc(p->L, LUA_GCCOUNT, 0);
+    // LUA_GCCOUNTB returns the remainder in bytes
+    int bytes = lua_gc(p->L, LUA_GCCOUNTB, 0);
+
+    double total_mb = (kbytes / 1024.0) + (bytes / (1024.0 * 1024.0));
+
+    server_log("MONITOR", "Plugin: [%s] | Usage: %.2f MB", p->name, total_mb);
+  }
+  server_log("MONITOR", "---------------------------");
+}
+
+int l_get_mem_usage(lua_State *L) {
+  int kbytes = lua_gc(L, LUA_GCCOUNT, 0);
+  lua_pushnumber(L, kbytes); // Return value in KB
+  return 1;
+}
+
+void copy_value(lua_State *L_from, lua_State *L_to, int idx) {
+    // 1. Convert relative index to absolute index immediately
+    if (idx < 0 && idx > LUA_REGISTRYINDEX) {
+        idx = lua_gettop(L_from) + idx + 1;
+    }
+
+    int type = lua_type(L_from, idx);
+    switch (type) {
+        case LUA_TSTRING:
+            lua_pushstring(L_to, lua_tostring(L_from, idx));
+            break;
+        case LUA_TNUMBER:
+            lua_pushnumber(L_to, lua_tonumber(L_from, idx));
+            break;
+        case LUA_TBOOLEAN:
+            lua_pushboolean(L_to, lua_toboolean(L_from, idx));
+            break;
+        case LUA_TTABLE:
+            lua_newtable(L_to);
+            int target_table_idx = lua_gettop(L_to); // Store where the new table is!
+
+            lua_pushnil(L_from); 
+            while (lua_next(L_from, idx) != 0) {
+                // Copy Key (at -2)
+                copy_value(L_from, L_to, -2);
+                // Copy Value (at -1)
+                copy_value(L_from, L_to, -1);
+
+                // Use the absolute index of the table we created
+                lua_settable(L_to, target_table_idx);
+                
+                lua_pop(L_from, 1); // Pop value, keep key for lua_next
+            }
+            break;
+        default:
+            // Instead of nil, maybe push a string describing the skipped type
+            // to help you debug why it's empty.
+            lua_pushstring(L_to, "[unsupported type]"); 
+            break;
+    }
+}
+
+// Your requested functions
+void copy_table_between_states(lua_State *from, lua_State *to, int index) {
+  copy_value(from, to, index);
+}
+
+void copy_value_back(lua_State *from, lua_State *to, int index) {
+  copy_value(from, to, index);
+}
+static int call_stack_depth = 0;
+#define MAX_CALL_STACK_DEPTH 10
+
+int l_call_hook(lua_State *L) {
+  if (call_stack_depth >= MAX_CALL_STACK_DEPTH) {
+    return luaL_error(L,
+                      "Critical Error: Max event recursion depth (%d) reached!",
+                      MAX_CALL_STACK_DEPTH);
+  }
+
+  call_stack_depth++; // Enter
+  const char *event_name = luaL_checkstring(L, 1);
+  int return_count = 0; // How many values we are returning to Lua
+
+  for (int i = 0; i < hook_count; i++) {
+    if (strcmp(hooks[i].hook_name, event_name) == 0) {
+      lua_State *targetL = hooks[i].plugin->L;
+
+      lua_getglobal(targetL, hooks[i].lua_func_name);
+      copy_table_between_states(L, targetL, 2);
+
+      if (lua_pcall(targetL, 1, 1, 0) != LUA_OK) {
+        const char *err = lua_tostring(targetL, -1);
+        lua_pushnil(L);
+        lua_pushstring(L, err);
+        return_count = 2; // Return nil + error
+        goto exit;        // JUMP TO CLEANUP
+      }
+
+      copy_value_back(targetL, L, -1);
+      lua_pop(targetL, 1);
+
+      return_count = 1; // Return the result
+      goto exit;        // JUMP TO CLEANUP
+    }
+  }
+
+exit:
+  call_stack_depth--; // ALWAYS DECREMENT BEFORE LEAVING
+  return return_count;
 }
