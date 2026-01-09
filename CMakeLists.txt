@@ -24,6 +24,7 @@ set(SOURCES
     src/main.c 
     src/plugin_manager.c 
     src/server.c
+    src/lua_helpers.c
 )
 
 add_executable(main.out ${SOURCES})

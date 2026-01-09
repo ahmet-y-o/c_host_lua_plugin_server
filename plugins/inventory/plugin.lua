@@ -13,7 +13,7 @@ end
 app.on_query("inventory_get", "handle_get_stock")
 
 app.get("/", function (req)
-    
+    app.emit("audit_log", { message= "test"})
     return app.render("index", {})
         :status(200)
     
