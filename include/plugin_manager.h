@@ -3,6 +3,7 @@
 #include <lua.h>      /* The core Lua VM functions */
 #include <lualib.h>   /* Access to standard Lua libraries (math, io, etc) */
 #include <lauxlib.h>  /* Helper functions for common tasks */
+#include <pthread.h>
 
 typedef struct {
     char *name;
@@ -10,16 +11,30 @@ typedef struct {
     lua_State *L;
 } Plugin;
 
+
+typedef struct Job {
+    Plugin *plugin;       // Direct pointer to the owner
+    char *lua_func_name;  // Function to call
+    char *payload;        // JSON data
+    struct Job *next;
+} Job;
+
+typedef struct {
+    Job *head;
+    Job *tail;
+    int count;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    bool shutdown;
+} JobQueue;
+
 typedef struct {
     char *hook_name;
     Plugin *plugin;
     char *lua_func_name; // The function name within that plugin's Lua state
     int priority; // Lower numbers = higher priority (runs sooner)
 } HookRegistration;
-/*
-extern HookRegistration hooks[256];
-extern int hook_count;
-*/
+
 typedef struct {
     // plugin storage
     Plugin **plugin_list;
@@ -30,6 +45,15 @@ typedef struct {
     HookRegistration **hook_list;
     int hook_count;
     int hook_capacity;
+
+    // The Job Queue
+    JobQueue *queue;
+    // Background Worker Management
+    pthread_t *worker_threads;
+    int num_workers;
+
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
     
 } PluginManager;
 
@@ -40,8 +64,8 @@ void refresh_plugins(PluginManager *pm);
 void preload_module(lua_State *L, const char *name, const char *source);
 int l_log(lua_State *L);
 void register_logger(lua_State *L);
-
-
+void start_worker_pool(PluginManager *pm, int num_workers);
+int l_enqueue_job(lua_State *L);
 
 // C function exposed to Lua: plugin_register_hook("hook_name", "lua_function")
 int l_register_hook(lua_State *L);

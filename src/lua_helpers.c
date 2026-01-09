@@ -9,6 +9,8 @@
 #include <lualib.h>
 #include <lauxlib.h>
 #include "plugin_manager.h"
+#include "applua_src.h"
+#include "etlua_src.h"
 
 int l_get_mem_usage(lua_State *L) {
   int kbytes = lua_gc(L, LUA_GCCOUNT, 0);
@@ -135,3 +137,36 @@ void preload_module(lua_State *L, const char *name, const char *source) {
   // Clean up stack (pop preload and package)
   lua_pop(L, 2);
 }
+
+
+void setup_lua_environment(lua_State *L, Plugin *p, PluginManager *pm) {
+    // 1. Core Libs & Modules
+    luaL_openlibs(L);
+    preload_module(L, "etlua", etlua_source);
+    preload_module(L, "core", app_lua_source);
+    
+    // 2. Logging & Utils
+    register_logger(L);
+    lua_pushcfunction(L, l_get_mem_usage);
+    lua_setglobal(L, "c_get_memory");
+
+    // 3. Plugin/Manager Context Functions
+    // We bind these to the specific Plugin and Manager passed in
+    lua_pushlightuserdata(L, p);
+    lua_pushlightuserdata(L, pm);
+    lua_pushcclosure(L, l_register_hook, 2);
+    lua_setglobal(L, "c_register_hook");
+
+    lua_pushlightuserdata(L, p);
+    lua_pushlightuserdata(L, pm);
+    lua_pushcclosure(L, l_call_hook, 2);
+    lua_setglobal(L, "c_call_hook");
+    
+    // 4. Add the Enqueue Job function here too!
+    lua_pushlightuserdata(L, p);
+    lua_pushlightuserdata(L, pm);
+    lua_pushcclosure(L, l_enqueue_job, 2);
+    lua_setglobal(L, "c_enqueue_job");
+}
+
+

@@ -1,8 +1,8 @@
 #include "plugin_manager.h"
-#include "applua_src.h"
-#include "etlua_src.h"
 #include "lua_helpers.h"
+#include <cJSON.h>
 #include <dirent.h>
+#include <lauxlib.h>
 #include <lua.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -10,7 +10,6 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
-
 
 PluginManager *create_manager() {
   // 1. Allocate the manager structure itself
@@ -99,14 +98,6 @@ Plugin *create_plugin(char *name, char *path) {
     free(p);
     return NULL;
   }
-
-  luaL_openlibs(p->L);
-  preload_module(p->L, "etlua", etlua_source);
-  preload_module(p->L, "core", app_lua_source);
-  register_logger(p->L);
-  lua_pushcfunction(p->L, l_get_mem_usage);
-  lua_setglobal(p->L, "c_get_memory");
-
   // 1. Load the file (compiles it to a chunk on the stack)
   size_t plugin_file_path_size =
       strlen(path) + 11; //  /plugin.lua is 11 characters
@@ -193,8 +184,6 @@ void refresh_plugins(PluginManager *pm) {
   }
   pm->plugin_count = 0;
 
-
-
   DIR *dp = opendir("./plugins");
   if (!dp) {
     perror("Directory error");
@@ -216,14 +205,7 @@ void refresh_plugins(PluginManager *pm) {
       if (!p)
         continue;
       // Push context to Lua1
-      lua_pushlightuserdata(p->L, p);
-      lua_pushlightuserdata(p->L, pm);
-      lua_pushcclosure(p->L, l_register_hook, 2); // Corrected to 2 upvalues
-      lua_setglobal(p->L, "c_register_hook");
-      lua_pushlightuserdata(p->L, p);
-      lua_pushlightuserdata(p->L, pm);
-      lua_pushcclosure(p->L, l_call_hook, 2);
-      lua_setglobal(p->L, "c_call_hook");
+      setup_lua_environment(p->L, p, pm);
       // Execute the script now that C functions are bound
 
       char script_path[1024];
@@ -238,8 +220,6 @@ void refresh_plugins(PluginManager *pm) {
   }
   closedir(dp);
 }
-
-
 
 #include <time.h>
 
@@ -286,7 +266,6 @@ void server_log(const char *level, const char *fmt, ...) {
 
   va_end(args);
 }
-
 
 void monitor_plugin_memory(PluginManager *pm) {
   server_log("MONITOR", "--- Memory Usage Report ---");
@@ -348,4 +327,257 @@ int l_call_hook(lua_State *L) {
 exit:
   call_stack_depth--; // ALWAYS DECREMENT BEFORE LEAVING
   return return_count;
+}
+
+cJSON *lua_table_to_json(lua_State *L, int index) {
+  index = lua_absindex(L, index);
+  cJSON *root = NULL;
+
+  // Check if table is an array or an object
+  // A simple way: if the first key is 1, treat as array
+  lua_pushnil(L);
+  if (lua_next(L, index) != 0) {
+    if (lua_isnumber(L, -2) && lua_tonumber(L, -2) == 1) {
+      root = cJSON_CreateArray();
+    } else {
+      root = cJSON_CreateObject();
+    }
+    lua_pop(L, 2); // pop key and value
+  } else {
+    return cJSON_CreateObject(); // empty table
+  }
+
+  lua_pushnil(L);
+  while (lua_next(L, index) != 0) {
+    cJSON *item = NULL;
+    int type = lua_type(L, -1);
+
+    // 1. Convert Value
+    switch (type) {
+    case LUA_TNUMBER:
+      item = cJSON_CreateNumber(lua_tonumber(L, -1));
+      break;
+    case LUA_TSTRING:
+      item = cJSON_CreateString(lua_tostring(L, -1));
+      break;
+    case LUA_TBOOLEAN:
+      item = cJSON_CreateBool(lua_toboolean(L, -1));
+      break;
+    case LUA_TTABLE:
+      item = lua_table_to_json(L, -1);
+      break;
+    default:
+      item = cJSON_CreateNull();
+      break;
+    }
+
+    // 2. Add to Root
+    if (root->type == cJSON_Array) {
+      cJSON_AddItemToArray(root, item);
+    } else {
+      const char *key = lua_tostring(L, -2);
+      cJSON_AddItemToObject(root, key, item);
+    }
+
+    lua_pop(L, 1); // pop value, keep key for next iteration
+  }
+  return root;
+}
+
+void json_to_lua_table(lua_State *L, cJSON *item) {
+  if (item->type == cJSON_Object) {
+    lua_newtable(L);
+    cJSON *child = item->child;
+    while (child) {
+      lua_pushstring(L, child->string);
+      json_to_lua_table(L, child);
+      lua_settable(L, -3);
+      child = child->next;
+    }
+  } else if (item->type == cJSON_Array) {
+    lua_newtable(L);
+    int i = 1;
+    cJSON *child = item->child;
+    while (child) {
+      lua_pushinteger(L, i++);
+      json_to_lua_table(L, child);
+      lua_settable(L, -3);
+      child = child->next;
+    }
+  } else if (item->type == cJSON_String) {
+    lua_pushstring(L, item->valuestring);
+  } else if (item->type == cJSON_Number) {
+    lua_pushnumber(L, item->valuedouble);
+  } else if (item->type == cJSON_True) {
+    lua_pushboolean(L, 1);
+  } else if (item->type == cJSON_False) {
+    lua_pushboolean(L, 0);
+  } else {
+    lua_pushnil(L);
+  }
+}
+void enqueue_job(JobQueue *jq, Job *new_job) {
+  // 1. Lock the queue so no other thread can modify it
+  pthread_mutex_lock(&jq->lock);
+
+  new_job->next = NULL;
+
+  // 2. Add the job to the end of the linked list
+  if (jq->tail == NULL) {
+    // Queue was empty
+    jq->head = new_job;
+    jq->tail = new_job;
+  } else {
+    // Link the old tail to the new job
+    jq->tail->next = new_job;
+    jq->tail = new_job;
+  }
+
+  jq->count++;
+
+  // 3. Signal ONE worker thread that is waiting in pthread_cond_wait
+  // This wakes up a worker to process the job
+  pthread_cond_signal(&jq->cond);
+
+  // 4. Unlock
+  pthread_mutex_unlock(&jq->lock);
+}
+
+JobQueue *job_queue_init() {
+  JobQueue *jq = malloc(sizeof(JobQueue));
+  jq->head = NULL;
+  jq->tail = NULL;
+  jq->count = 0;
+  jq->shutdown = false;
+
+  // Initialize the thread primitives
+  pthread_mutex_init(&jq->lock, NULL);
+  pthread_cond_init(&jq->cond, NULL);
+
+  return jq;
+}
+int l_enqueue_job(lua_State *L) {
+  printf("test");
+  Plugin *p = (Plugin *)lua_touserdata(L, lua_upvalueindex(1));
+  PluginManager *pm = (PluginManager *)lua_touserdata(L, lua_upvalueindex(2));
+
+  const char *func_name = luaL_checkstring(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+
+  Job *new_job = malloc(sizeof(Job));
+  new_job->plugin = p; // Just copy the pointer address
+  new_job->lua_func_name = strdup(func_name);
+
+  // Serialize table to JSON string
+  cJSON *json = lua_table_to_json(L, 2);
+  new_job->payload = cJSON_PrintUnformatted(json);
+  cJSON_Delete(json);
+
+  enqueue_job(pm->queue, new_job);
+  return 0;
+}
+Job *job_queue_pop(JobQueue *jq) {
+  pthread_mutex_lock(&jq->lock);
+
+  // 1. Wait while the queue is empty AND we aren't shutting down
+  // We use a 'while' loop to protect against "spurious wakeups"
+  while (jq->count == 0 && !jq->shutdown) {
+    // This atomically releases the lock and pauses the thread.
+    // It will only wake up when enqueue_job calls pthread_cond_signal.
+    pthread_cond_wait(&jq->cond, &jq->lock);
+  }
+
+  // 2. If we woke up because of a shutdown, return NULL
+  if (jq->shutdown) {
+    pthread_mutex_unlock(&jq->lock);
+    return NULL;
+  }
+
+  // 3. Extract the job from the head of the list
+  Job *job = jq->head;
+  jq->head = job->next;
+
+  if (jq->head == NULL) {
+    jq->tail = NULL; // Queue is now completely empty
+  }
+
+  jq->count--;
+
+  pthread_mutex_unlock(&jq->lock);
+  return job;
+}
+
+void *worker_thread(void *arg) {
+    PluginManager *pm = (PluginManager *)arg;
+
+    while (1) {
+        Job *job = job_queue_pop(pm->queue);
+        if (!job) break; // Shutdown signal
+
+        // 1. Create a fresh, isolated state for this specific job
+        lua_State *L = luaL_newstate();
+        
+        // 2. Setup the environment (Libs, C-functions, and this job's identity)
+        setup_lua_environment(L, job->plugin, pm);
+
+        // 3. Load the specific plugin's code
+        char script_path[1024];
+        snprintf(script_path, sizeof(script_path), "%s/plugin.lua", job->plugin->path);
+        
+        if (luaL_dofile(L, script_path) == LUA_OK) {
+            // 4. Look up the function and execute
+            lua_getglobal(L, job->lua_func_name);
+
+            if (lua_isfunction(L, -1)) {
+                cJSON *json = cJSON_Parse(job->payload);
+                if (json) {
+                    json_to_lua_table(L, json);
+                    cJSON_Delete(json);
+
+                    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+                        fprintf(stderr, "Async Error (Plugin: %s): %s\n", 
+                                job->plugin->name, lua_tostring(L, -1));
+                    }
+                }
+            } else {
+                fprintf(stderr, "Async Error: Function '%s' not found in %s\n", 
+                        job->lua_func_name, job->plugin->name);
+            }
+        } else {
+            fprintf(stderr, "Async Error: Could not load script %s: %s\n", 
+                    script_path, lua_tostring(L, -1));
+        }
+
+        // 5. Destroy the state completely - memory is fully reclaimed
+        lua_close(L);
+
+        // 6. Cleanup Job
+        free(job->lua_func_name);
+        free(job->payload);
+        free(job);
+    }
+
+    return NULL;
+}
+
+void start_worker_pool(PluginManager *pm, int num_workers) {
+  pm->queue = job_queue_init();
+  pm->worker_threads = malloc(sizeof(pthread_t) * num_workers);
+  pm->num_workers = num_workers;
+
+  for (int i = 0; i < num_workers; i++) {
+    pthread_create(&pm->worker_threads[i], NULL, worker_thread, pm);
+  }
+}
+
+void job_queue_shutdown(PluginManager *pm) {
+    pthread_mutex_lock(&pm->queue->lock);
+    pm->queue->shutdown = true;
+    // Wake up everyone so they see the shutdown flag
+    pthread_cond_broadcast(&pm->queue->cond); 
+    pthread_mutex_unlock(&pm->queue->lock);
+
+    for (int i = 0; i < pm->num_workers; i++) {
+        pthread_join(pm->worker_threads[i], NULL);
+    }
 }

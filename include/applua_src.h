@@ -23,6 +23,10 @@ function core.query(query_name, data)
     return c_call_hook(query_name, data or {})
 end
 
+function core.defer(job_name, data)
+    c_enqueue_job(job_name, data or {})
+end
+
 local function parse_route(path)
     local param_names = {}
     

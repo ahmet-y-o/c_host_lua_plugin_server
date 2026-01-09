@@ -7,9 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 2. Find Dependencies
-# This looks for the development headers and libraries on your system
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(MICROHTTPD REQUIRED libmicrohttpd)
+# Added libcjson here
+pkg_check_modules(DEPS REQUIRED libmicrohttpd libcjson) 
 find_package(Lua REQUIRED)
 
 # Add the Threads package
@@ -17,7 +17,8 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 # 3. Include Directories
-include_directories(include ${LUA_INCLUDE_DIR} ${MICROHTTPD_INCLUDE_DIRS})
+# Added ${DEPS_INCLUDE_DIRS} which covers microhttpd and cjson
+include_directories(include ${LUA_INCLUDE_DIR} ${DEPS_INCLUDE_DIRS})
 
 # 4. Define the Executable and Source Files
 set(SOURCES 
@@ -33,7 +34,7 @@ add_executable(main.out ${SOURCES})
 target_link_libraries(main.out 
     PRIVATE 
     ${LUA_LIBRARIES} 
-    ${MICROHTTPD_LIBRARIES}
+    ${DEPS_LIBRARIES} # Links both microhttpd and cjson
     Threads::Threads
 )
 
@@ -46,5 +47,4 @@ add_custom_target(copy_plugins
 )
 
 # 6.2. Make your main executable depend on this target
-# This ensures that whenever you build main.out, copy_plugins is checked/run
 add_dependencies(main.out copy_plugins)

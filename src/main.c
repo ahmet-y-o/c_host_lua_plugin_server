@@ -13,8 +13,10 @@ int main() {
     if (pm == NULL) {
         printf("create_manager returned null");
     }
-
+    
+    start_worker_pool(pm, 4);
     refresh_plugins(pm);
+    
 
     for (int i = 0; i < pm->plugin_count ; i++) {
         printf("%s\t%s\n", pm->plugin_list[i]->name, pm->plugin_list[i]->path);
