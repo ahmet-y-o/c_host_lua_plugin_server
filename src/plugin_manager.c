@@ -23,13 +23,17 @@ PluginManager *create_manager() {
     return NULL;
   }
   // 3. Allocate the internall array of hooks
-  pm->hook_list = calloc(4, sizeof(HookRegistration *));
+  pm->hook_list = calloc(5, sizeof(HookRegistration *));
   if (pm->hook_list == NULL) {
     free(pm->plugin_list);
     free(pm);
     return NULL;
   }
-  pm->hook_capacity = 4;
+
+  pm->queue = job_queue_init(); 
+  pthread_mutex_init(&pm->lock, NULL);
+
+  pm->hook_capacity = 5;
   pm->hook_count = 0;
   pm->plugin_count = 0;
   pm->plugin_capacity = 4;
@@ -57,30 +61,52 @@ void destroy_hook(HookRegistration *h) {
 }
 
 void destroy_manager(PluginManager *pm) {
-  if (pm == NULL)
-    return;
+    if (pm == NULL) return;
 
-  // 1. Clean up each plugin (Close Lua states)
-  for (int i = 0; i < pm->plugin_count; i++) {
-    if (pm->plugin_list[i]) {
-      destroy_plugin(pm->plugin_list[i]);
+    // 1. SHUTDOWN THE WORKERS FIRST
+    // We must stop the threads before we start freeing the data they use!
+    if (pm->queue) {
+        pthread_mutex_lock(&pm->queue->lock);
+        pm->queue->shutdown = true;
+        pthread_cond_broadcast(&pm->queue->cond); // Wake up all workers
+        pthread_mutex_unlock(&pm->queue->lock);
+
+        // Wait for every worker thread to finish its current job and exit
+        for (int i = 0; i < pm->num_workers; i++) {
+            pthread_join(pm->worker_threads[i], NULL);
+        }
+        free(pm->worker_threads);
     }
-  }
 
-  // 2. Free the internal array
-  free(pm->plugin_list);
-
-  // 3. Free each hook registarion
-  for (int i = 0; i < pm->hook_count; i++) {
-    if (pm->hook_list[i]) {
-      destroy_hook(pm->hook_list[i]);
+    // 2. CLEAN UP THE REMAINING JOBS
+    // If there were jobs still in the queue, free them now
+    Job *curr = pm->queue->head;
+    while (curr) {
+        Job *next = curr->next;
+        free(curr->lua_func_name);
+        free(curr->payload);
+        free(curr);
+        curr = next;
     }
-  }
+    pthread_mutex_destroy(&pm->queue->lock);
+    pthread_cond_destroy(&pm->queue->cond);
+    free(pm->queue);
 
-  free(pm->hook_list);
+    // 3. CLEAN UP PLUGINS
+    for (int i = 0; i < pm->plugin_count; i++) {
+        destroy_plugin(pm->plugin_list[i]);
+    }
+    free(pm->plugin_list);
 
-  // 5. Free the manager itself
-  free(pm);
+    // 4. CLEAN UP HOOKS
+    for (int i = 0; i < pm->hook_count; i++) {
+        destroy_hook(pm->hook_list[i]);
+    }
+    free(pm->hook_list);
+
+    // 5. FINAL CLEANUP
+    pthread_mutex_destroy(&pm->lock);
+    free(pm);
 }
 
 Plugin *create_plugin(char *name, char *path) {
@@ -100,7 +126,7 @@ Plugin *create_plugin(char *name, char *path) {
   }
   // 1. Load the file (compiles it to a chunk on the stack)
   size_t plugin_file_path_size =
-      strlen(path) + 11; //  /plugin.lua is 11 characters
+      strlen(path) + 12; //  /plugin.lua is 11 characters
   char *plugin_file_path = malloc(plugin_file_path_size);
   sprintf(plugin_file_path, "%s/%s", path, "plugin.lua");
   if (luaL_loadfile(p->L, plugin_file_path) != LUA_OK) {
@@ -214,6 +240,7 @@ void refresh_plugins(PluginManager *pm) {
         fprintf(stderr, "Lua Error: %s\n", lua_tostring(p->L, -1));
         destroy_plugin(p);
       } else {
+        apply_plugin_schema(p->L, p);
         add_plugin(pm, p);
       }
     }
@@ -329,60 +356,6 @@ exit:
   return return_count;
 }
 
-cJSON *lua_table_to_json(lua_State *L, int index) {
-  index = lua_absindex(L, index);
-  cJSON *root = NULL;
-
-  // Check if table is an array or an object
-  // A simple way: if the first key is 1, treat as array
-  lua_pushnil(L);
-  if (lua_next(L, index) != 0) {
-    if (lua_isnumber(L, -2) && lua_tonumber(L, -2) == 1) {
-      root = cJSON_CreateArray();
-    } else {
-      root = cJSON_CreateObject();
-    }
-    lua_pop(L, 2); // pop key and value
-  } else {
-    return cJSON_CreateObject(); // empty table
-  }
-
-  lua_pushnil(L);
-  while (lua_next(L, index) != 0) {
-    cJSON *item = NULL;
-    int type = lua_type(L, -1);
-
-    // 1. Convert Value
-    switch (type) {
-    case LUA_TNUMBER:
-      item = cJSON_CreateNumber(lua_tonumber(L, -1));
-      break;
-    case LUA_TSTRING:
-      item = cJSON_CreateString(lua_tostring(L, -1));
-      break;
-    case LUA_TBOOLEAN:
-      item = cJSON_CreateBool(lua_toboolean(L, -1));
-      break;
-    case LUA_TTABLE:
-      item = lua_table_to_json(L, -1);
-      break;
-    default:
-      item = cJSON_CreateNull();
-      break;
-    }
-
-    // 2. Add to Root
-    if (root->type == cJSON_Array) {
-      cJSON_AddItemToArray(root, item);
-    } else {
-      const char *key = lua_tostring(L, -2);
-      cJSON_AddItemToObject(root, key, item);
-    }
-
-    lua_pop(L, 1); // pop value, keep key for next iteration
-  }
-  return root;
-}
 
 void json_to_lua_table(lua_State *L, cJSON *item) {
   if (item->type == cJSON_Object) {
@@ -443,6 +416,49 @@ void enqueue_job(JobQueue *jq, Job *new_job) {
   pthread_mutex_unlock(&jq->lock);
 }
 
+int l_trigger_async_event(lua_State *L) {
+    // Upvalue 2: The PluginManager
+    PluginManager *pm = (PluginManager *)lua_touserdata(L, lua_upvalueindex(2));
+    
+    const char *event_name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    // 1. Serialize the data ONCE. 
+    // We do this here so we don't repeat the work for every listener.
+    cJSON *json = lua_table_to_json(L, 2);
+    char *json_payload = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+
+    int listeners_found = 0;
+
+    // 2. Lock the manager to safely scan the hooks
+    pthread_mutex_lock(&pm->lock); 
+
+    for (int i = 0; i < pm->hook_count; i++) {
+        if (strcmp(pm->hook_list[i]->hook_name, event_name) == 0) {
+            // 3. Create a NEW job for EVERY plugin listening to this event
+            Job *new_job = malloc(sizeof(Job));
+            new_job->plugin = pm->hook_list[i]->plugin;
+            new_job->lua_func_name = strdup(pm->hook_list[i]->lua_func_name);
+            new_job->payload = strdup(json_payload); // Each job gets its own copy
+            new_job->next = NULL;
+
+            // 4. Push directly to the queue
+            enqueue_job(pm->queue, new_job);
+            listeners_found++;
+        }
+    }
+
+    pthread_mutex_unlock(&pm->lock);
+
+    // Cleanup the local JSON string
+    free(json_payload);
+
+    // Return the number of workers notified to Lua (optional but helpful for debugging)
+    lua_pushinteger(L, listeners_found);
+    return 1;
+}
+
 JobQueue *job_queue_init() {
   JobQueue *jq = malloc(sizeof(JobQueue));
   jq->head = NULL;
@@ -456,8 +472,8 @@ JobQueue *job_queue_init() {
 
   return jq;
 }
+
 int l_enqueue_job(lua_State *L) {
-  printf("test");
   Plugin *p = (Plugin *)lua_touserdata(L, lua_upvalueindex(1));
   PluginManager *pm = (PluginManager *)lua_touserdata(L, lua_upvalueindex(2));
 
@@ -476,6 +492,7 @@ int l_enqueue_job(lua_State *L) {
   enqueue_job(pm->queue, new_job);
   return 0;
 }
+
 Job *job_queue_pop(JobQueue *jq) {
   pthread_mutex_lock(&jq->lock);
 
@@ -561,7 +578,6 @@ void *worker_thread(void *arg) {
 }
 
 void start_worker_pool(PluginManager *pm, int num_workers) {
-  pm->queue = job_queue_init();
   pm->worker_threads = malloc(sizeof(pthread_t) * num_workers);
   pm->num_workers = num_workers;
 

@@ -7,24 +7,30 @@ local core = {}
 core.routes = {}
 local etlua = require("etlua")
 
-function core.on_event(event_name, callback_name)
-    c_register_hook(event_name, callback_name)
+-- QUERIES (Synchronous)
+-- Used when you need an immediate answer from another plugin.
+function core.query_handle(name, func_name) 
+    c_register_hook(name, func_name) 
 end
 
-function core.on_query(query_name, callback_name)
-    c_register_hook(query_name, callback_name)
+function core.query(name, data) 
+    return c_call_hook(name, data or {}) 
 end
 
-function core.emit(event_name, data)
-    return c_call_hook(event_name, data or {})
+-- EMITS (Asynchronous Events)
+-- Used to broadcast that something happened. Handlers run in background.
+function core.emit_handle(name, func_name) 
+    c_register_hook(name, func_name) 
 end
 
-function core.query(query_name, data)
-    return c_call_hook(query_name, data or {})
+function core.emit(name, data) 
+    return c_trigger_async_event(name, data or {}) 
 end
 
-function core.defer(job_name, data)
-    c_enqueue_job(job_name, data or {})
+-- DEFER (Direct Asynchronous Task)
+-- Used to offload a specific, known function to the background.
+function core.defer(func_name, data) 
+    c_enqueue_job(func_name, data or {}) 
 end
 
 local function parse_route(path)

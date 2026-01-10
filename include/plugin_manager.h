@@ -4,11 +4,13 @@
 #include <lualib.h>   /* Access to standard Lua libraries (math, io, etc) */
 #include <lauxlib.h>  /* Helper functions for common tasks */
 #include <pthread.h>
+#include <sqlite3.h>
 
 typedef struct {
     char *name;
     char *path;
     lua_State *L;
+    sqlite3 *db;
 } Plugin;
 
 
@@ -66,13 +68,13 @@ int l_log(lua_State *L);
 void register_logger(lua_State *L);
 void start_worker_pool(PluginManager *pm, int num_workers);
 int l_enqueue_job(lua_State *L);
-
+int l_trigger_async_event(lua_State *L);
 // C function exposed to Lua: plugin_register_hook("hook_name", "lua_function")
 int l_register_hook(lua_State *L);
 
 // C function exposed to Lua: plugin_call_hook("hook_name", data_table)
 int l_call_hook(lua_State *L);
-
+JobQueue *job_queue_init();
 
 int l_get_mem_usage(lua_State *L);
 
