@@ -1,47 +1,37 @@
 app = require("core")
 
 schema = {
-  items = {
-    id = "INTEGER PRIMARY KEY AUTOINCREMENT",
-    name = "TEXT NOT NULL",
-    stock = "INTEGER DEFAULT 0",
-    price = "REAL"
-  }
+    products = {
+        id = "INTEGER PRIMARY KEY AUTOINCREMENT",
+        sku = "TEXT UNIQUE NOT NULL",
+        name = "TEXT NOT NULL",
+        quantity = "INTEGER DEFAULT 0",
+    }
 }
 
-function handle_get_stock(data)
-  print("invoking stock data")
-  return "warehouse"
-end
-
-app.get("/write", function(req)
-  print("[Lua] Writing to DB: " .. "kalem")
-
-  local sql = string.format(
-    "INSERT INTO items (name, stock) VALUES ('%s', %d)",
-    "kalem", 3
-  )
-
-  local ok, err = db_exec(sql)
-  if not ok then
-    print("[Lua] DB Error: " .. err)
-  else
-    print("[Lua] DB Write Successful!")
-  end
-  return app.render("index", { id = 12 })
-      :status(200)
+app.get("/", function(req)
+    local items = db_query("SELECT * FROM products")
+    return app.render("index", {items = items})
 end)
 
-app.get("/read", function(req)
-  print("[Lua] Fetching inventory...")
-  local rows = db_query("SELECT * FROM items")
-
-  for i, row in ipairs(rows) do
-    print(string.format("  [%d] Item: %s | Stock: %d", row.id, row.name, row.stock))
-  end
-
-  return app.render("index", { id = 12 })
-      :status(200)
+app.get("/new-item", function (req)
+    return app.render("new-item", {})
 end)
 
-app.query_handle("inv", "handle_get_stock")
+app.post("/new-item", function (req)
+    print("in post")
+    local query = string.format(
+        "INSERT INTO products (sku, name, quantity) VALUES ('%s', '%s', %s)",
+        req.form.sku, req.form.name, req.form.quantity
+    )
+    print(query)
+    db_exec(query)
+    return app.redirect("/inventory")
+end)
+
+app.post("/posttest", function(req)
+    app.info("Method: " .. req.method)
+    app.info("Body Length: " .. #req.body)
+    app.info("Body Content: " .. req.body)
+    return "Post data is " .. req.body
+end)

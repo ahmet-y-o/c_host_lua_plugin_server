@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<title></title>
+</head>
+
+
+<body>
+
+    <h1>Enter New Item</h1>
+    <form method="post">
+        <label>SKU</label>
+        <input name="sku" />
+
+        <label>Name</label>
+        <input name="name" />
+
+        <label>Quantity</label>
+        <input name="quantity" />
+
+
+        <button type="submit">Add</button>
+    </form>
+    
+
+
+</body>
+
+</html>

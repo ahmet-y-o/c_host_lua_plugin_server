@@ -1,6 +1,31 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
+<head>
+<title></title>
+</head>
+
+
 <body>
-    <h1>Hello From Inventory</h1>
+
+    <h1>Warehouse Inventory</h1>
+<table border="1">
+    <tr>
+        <th>SKU</th>
+        <th>Product</th>
+        <th>In Stock</th>
+        <th>Price</th>
+    </tr>
+    <% for _, item in ipairs(items) do %>
+    <tr>
+        <td><%= item.sku %></td>
+        <td><%= item.name %></td>
+        <td><%= item.quantity %></td>
+    </tr>
+    <% end %>
+</table>
+    
+
+
 </body>
+
 </html>

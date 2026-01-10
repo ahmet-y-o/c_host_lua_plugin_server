@@ -1,28 +1,31 @@
 local core = {}
 core.routes = {}
-core.middlewares = {} -- List of middleware function names
 local etlua = require("etlua")
 
--- Function for plugins to register middleware
-function core.use(func_name)
-    if type(func_name) ~= "string" then
-        core.error("Middleware must be a string (function name)")
-        return
-    end
-    table.insert(core.middlewares, func_name)
+-- QUERIES (Synchronous)
+-- Used when you need an immediate answer from another plugin.
+function core.query_handle(name, func_name) 
+    c_register_hook(name, func_name) 
 end
 
-
-function core.on(event_name, callback_name)
-    c_register_hook(event_name, callback_name)
+function core.query(name, data) 
+    return c_call_hook(name, data or {}) 
 end
 
-function core.emit(event_name, data)
-    return c_call_hook(event_name, data or {})
+-- EMITS (Asynchronous Events)
+-- Used to broadcast that something happened. Handlers run in background.
+function core.emit_handle(name, func_name) 
+    c_register_hook(name, func_name) 
 end
 
-function core.query(event_name, data)
-    return c_call_hook(event_name, data or {})
+function core.emit(name, data) 
+    return c_trigger_async_event(name, data or {}) 
+end
+
+-- DEFER (Direct Asynchronous Task)
+-- Used to offload a specific, known function to the background.
+function core.defer(func_name, data) 
+    c_enqueue_job(func_name, data or {}) 
 end
 
 local function parse_route(path)
@@ -108,6 +111,38 @@ function core.render(view_name, data)
     return create_response(html):type("text/html")
 end
 
+-- Redirect function
+function core.redirect(url, status_code)
+    -- Default to 302 Found (Temporary Redirect) if no status is provided
+    local status = status_code or 302
+    
+    -- We create an empty response body because the browser follows the header
+    return create_response("")
+        :status(status)
+        :header("Location", url)
+end
+
+-- Helper to decode URL-encoded strings (e.g., %20 to space)
+local function url_decode(str)
+    str = str:gsub("+", " ")
+    str = str:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+    return str
+end
+
+-- Function to parse form data into a table
+function core.parse_form(body)
+    local data = {}
+    if not body or body == "" then return data end
+
+    for pair in body:gmatch("([^&]+)") do
+        local key, value = pair:match("([^=]+)=([^=]*)")
+        if key then
+            data[url_decode(key)] = url_decode(value or "")
+        end
+    end
+    return data
+end
+
 function core.memory_kb()
     return c_get_memory()
 end
@@ -127,22 +162,18 @@ function core.get(path, handler) core.match("GET", path, handler) end
 function core.post(path, handler) core.match("POST", path, handler) end
 
 
--- Updated Dispatcher
+-- Dispatcher
 function core.handle_request(req)
-    -- 1. RUN MIDDLEWARES
-    for _, m_name in ipairs(core.middlewares) do
-        local m_func = _G[m_name]
-        if m_func then
-            -- Middlewares receive the 'req' object
-            local response = m_func(req)
-            -- If a middleware returns a table, we stop and return it as the response
-            if type(response) == "table" and response.status then
-                return response
-            end
+    local method = req.method:upper()
+    local content_type = (req.headers and req.headers["Content-Type"]) or ""
+
+    req.form = {}
+
+    if method == "POST" or method == "PUT" then
+        if content_type:find("application/x-www-form-urlencoded") then
+            req.form = parse_form(req.body or "")
         end
     end
-
-    local method = req.method:upper()
     
     for _, route in ipairs(core.routes) do
         if route.method == method then

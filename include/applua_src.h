@@ -116,6 +116,40 @@ function core.render(view_name, data)
     return create_response(html):type("text/html")
 end
 
+-- Redirect function
+function core.redirect(url, status_code)
+    -- Default to 302 Found (Temporary Redirect) if no status is provided
+    local status = status_code or 302
+    
+    -- We create an empty response body because the browser follows the header
+    return create_response("")
+        :status(status)
+        :header("Location", url)
+end
+
+local function url_decode(str)
+    if not str then return "" end
+    str = str:gsub("+", " ")
+    str = str:gsub("%%(%x%x)", function(h) 
+        return string.char(tonumber(h, 16)) 
+    end)
+    return str
+end
+
+function core.parse_form(body)
+    local data = {}
+    if not body or body == "" then 
+        return data 
+    end
+
+    for key, value in body:gmatch("([^&=]+)=([^&]*)") do
+        local d_key = url_decode(key)
+        local d_val = url_decode(value)
+        data[d_key] = d_val
+    end
+
+    return data
+end
 function core.memory_kb()
     return c_get_memory()
 end
@@ -134,9 +168,19 @@ end
 function core.get(path, handler) core.match("GET", path, handler) end
 function core.post(path, handler) core.match("POST", path, handler) end
 
--- Updated Dispatcher
+
+-- Dispatcher
 function core.handle_request(req)
     local method = req.method:upper()
+    req.form = {}
+    if method == "POST" or method == "PUT" then
+        -- for now, assume form encoded body    
+        req.form = core.parse_form(req.body or "")
+        for k,v in ipairs(core.parse_form(req.body or "")) do
+            print(k)
+            print(v)
+        end
+    end
     
     for _, route in ipairs(core.routes) do
         if route.method == method then
@@ -186,7 +230,6 @@ function core.warn(msg)  core.log("WARN", msg) end
 function core.error(msg) core.log("ERROR", msg) end
 
 return core
-
 )lua";
 
 
