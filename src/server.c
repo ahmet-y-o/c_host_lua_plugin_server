@@ -1,9 +1,9 @@
 #include "server.h"
 #include "plugin_manager.h"
 #include <fcntl.h>
-#include <lauxlib.h> /* Helper functions for common tasks */
-#include <lua.h>     /* The core Lua VM functions */
-#include <lualib.h>  /* Access to standard Lua libraries (math, io, etc) */
+#include <lauxlib.h>
+#include <lua.h>
+#include <lualib.h>
 #include <microhttpd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,13 +43,14 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
     return MHD_YES;
   }
   PostBuffer *buffer = (PostBuffer *)*con_cls;
-  // 2. Accumulate data if it's arriving
+  // accumulate data if it's arriving
   if (*upload_data_size > 0) {
     buffer->data = realloc(buffer->data, buffer->size + *upload_data_size + 1);
     memcpy(buffer->data + buffer->size, upload_data, *upload_data_size);
     buffer->size += *upload_data_size;
-    buffer->data[buffer->size] = '\0'; // Null terminate
-    *upload_data_size = 0;             // Tell MHD we consumed the data
+    // Null terminate
+    buffer->data[buffer->size] = '\0';
+    *upload_data_size = 0;
     return MHD_YES;
   }
 
@@ -139,7 +140,8 @@ enum MHD_Result serve_static_file(const char *path,
                                   struct MHD_Connection *connection) {
   int fd = open(path, O_RDONLY);
   if (fd == -1) {
-    return MHD_NO; // File not found, C will then try Lua or return 404
+    // file not found, try lua or return 404
+    return MHD_NO; 
   }
 
   // Get file size
@@ -182,7 +184,7 @@ struct MHD_Response *build_response_from_lua(lua_State *L, int *status_out) {
       lua_pop(L, 1);
     }
   }
-  lua_pop(L, 1); // pop headers
+  lua_pop(L, 1);
   return response;
 }
 
@@ -207,7 +209,8 @@ struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
   lua_settable(L, -3);
   lua_pushstring(L, "body");
   if (body_data) {
-    lua_pushlstring(L, body_data, body_len); // Use lstring for binary safety
+    // lstring for binary safety
+    lua_pushlstring(L, body_data, body_len);
   } else {
     lua_pushstring(L, "");
   }
@@ -215,12 +218,12 @@ struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
 
   if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
     fprintf(stderr, "Lua Error: %s\n", lua_tostring(L, -1));
-    lua_pop(L, 2); // pop error and app table
+    lua_pop(L, 2);
     return NULL;
   }
 
   struct MHD_Response *res = build_response_from_lua(L, status_out);
-  lua_pop(L, 2); // pop result and app table
+  lua_pop(L, 2);
   return res;
 }
 
