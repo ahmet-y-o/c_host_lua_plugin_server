@@ -11,24 +11,115 @@
 #include <sys/stat.h>
 
 typedef struct {
-  char *data;
-  size_t size;
-} PostBuffer;
+  // Data from MHD
+  struct MHD_Connection *connection;
+  char *url;
+  char *method;
+
+  // Upload buffer logic
+  char *upload_data;
+  size_t upload_size;
+
+  // Result storage
+  struct MHD_Response *response;
+  int status_code;
+  bool processing_done;
+
+  // References
+  PluginManager *pm;
+} RequestContext;
+
+void *async_worker(void *arg) {
+  RequestContext *ctx = (RequestContext *)arg;
+
+  // 1. TRY SPECIFIC PLUGINS
+  for (int i = 0; i < ctx->pm->plugin_count; i++) {
+    Plugin *p = ctx->pm->plugin_list[i];
+    if (strcmp(p->name, "default") == 0) continue;
+
+    size_t len = strlen(p->name);
+    // Check if URL starts with /plugin_name
+    if (ctx->url[0] == '/' && strncmp(ctx->url + 1, p->name, len) == 0) {
+      const char *after = ctx->url + 1 + len;
+
+      // A. Static Check
+      if (strncmp(after, "/static/", 8) == 0) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/static/%s", p->path, after + 8);
+        
+        // FIX: Just get the response object, don't queue it yet!
+        ctx->response = get_static_response(path); 
+        if (ctx->response) {
+            ctx->status_code = 200;
+            break; // Found it, exit loop
+        }
+      }
+
+      // B. Lua Check
+      const char *rel_url = (*after == '\0') ? "/" : after;
+      ctx->response = call_plugin_logic(p, rel_url, ctx->method, &(ctx->status_code),
+                                        ctx->upload_data, ctx->upload_size);
+      if (ctx->response) break;
+    }
+  }
+
+  // 2. FALLBACK TO DEFAULT (If no response yet)
+  if (!ctx->response) {
+    for (int i = 0; i < ctx->pm->plugin_count; i++) {
+      // FIX: Use ctx->pm, not pm
+      if (strcmp(ctx->pm->plugin_list[i]->name, "default") == 0) {
+        
+        // Static Fallback
+        if (strncmp(ctx->url, "/static/", 8) == 0) {
+          char path[512];
+          snprintf(path, sizeof(path), "%s/static/%s", ctx->pm->plugin_list[i]->path,
+                   ctx->url + 8);
+          ctx->response = get_static_response(path);
+          if (ctx->response) {
+              ctx->status_code = 200;
+              break;
+          }
+        }
+        
+        // Lua Fallback
+        ctx->response = call_plugin_logic(ctx->pm->plugin_list[i], ctx->url,
+                                          ctx->method, &(ctx->status_code),
+                                          ctx->upload_data, ctx->upload_size);
+        break;
+      }
+    }
+  }
+
+  // 3. 404 IF STILL NULL
+  if (!ctx->response) {
+    ctx->status_code = 404;
+    ctx->response = MHD_create_response_from_buffer(13, "Not Found 404",
+                                                    MHD_RESPMEM_MUST_COPY);
+  }
+
+  // 4. TELL MHD TO RESUME
+  ctx->processing_done = true;
+  MHD_resume_connection(ctx->connection);
+
+  return NULL; // FIX: Return NULL, not MHD_YES
+}
 
 void request_completed(void *cls, struct MHD_Connection *connection,
                        void **con_cls, enum MHD_RequestTerminationCode toe) {
-  PostBuffer *buffer = (PostBuffer *)*con_cls;
-  if (buffer) {
-    if (buffer->data)
-      free(buffer->data);
-    free(buffer);
+  RequestContext *ctx = (RequestContext *)*con_cls;
+  if (ctx) {
+    if (ctx->upload_data) free(ctx->upload_data);
+    if (ctx->url) free(ctx->url);
+    if (ctx->method) free(ctx->method);
+    free(ctx);
   }
 }
 
 struct MHD_Daemon *start_server(PluginManager *pm) {
-  return MHD_start_daemon(MHD_USE_INTERNAL_POLLING_THREAD, 8888, NULL, NULL,
-                          &respond, pm, MHD_OPTION_NOTIFY_COMPLETED,
-                          &request_completed, NULL, MHD_OPTION_END);
+  return MHD_start_daemon(
+      MHD_USE_INTERNAL_POLLING_THREAD | MHD_ALLOW_SUSPEND_RESUME, 8888, NULL,
+      NULL, &respond, pm, MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+      MHD_OPTION_END);
 }
 
 // This function is called for every incoming request
@@ -36,85 +127,46 @@ enum MHD_Result respond(void *closure, struct MHD_Connection *connection,
                         const char *url, const char *method,
                         const char *version, const char *upload_data,
                         size_t *upload_data_size, void **con_cls) {
+  RequestContext *ctx = *con_cls;
 
-  if (*con_cls == NULL) {
-    PostBuffer *buffer = calloc(1, sizeof(PostBuffer));
-    *con_cls = buffer;
+  // 1. Initialize Context on first call
+  if (ctx == NULL) {
+    ctx = calloc(1, sizeof(RequestContext));
+    ctx->pm = (PluginManager *)closure;
+    ctx->connection = connection;
+    ctx->url = strdup(url);
+    ctx->method = strdup(method);
+    *con_cls = ctx;
     return MHD_YES;
   }
-  PostBuffer *buffer = (PostBuffer *)*con_cls;
-  // accumulate data if it's arriving
+
+  // 2. Accumulate Upload Data
   if (*upload_data_size > 0) {
-    buffer->data = realloc(buffer->data, buffer->size + *upload_data_size + 1);
-    memcpy(buffer->data + buffer->size, upload_data, *upload_data_size);
-    buffer->size += *upload_data_size;
-    // Null terminate
-    buffer->data[buffer->size] = '\0';
+    ctx->upload_data =
+        realloc(ctx->upload_data, ctx->upload_size + *upload_data_size + 1);
+    memcpy(ctx->upload_data + ctx->upload_size, upload_data, *upload_data_size);
+    ctx->upload_size += *upload_data_size;
+    ctx->upload_data[ctx->upload_size] = '\0';
     *upload_data_size = 0;
     return MHD_YES;
   }
 
-  PluginManager *pm = (PluginManager *)closure;
-  struct MHD_Response *response = NULL;
-  int status_code = 200;
-
-  // 1. TRY SPECIFIC PLUGINS
-  for (int i = 0; i < pm->plugin_count; i++) {
-    Plugin *p = pm->plugin_list[i];
-    if (strcmp(p->name, "default") == 0)
-      continue;
-
-    size_t len = strlen(p->name);
-    if (url[0] == '/' && strncmp(url + 1, p->name, len) == 0) {
-      const char *after = url + 1 + len;
-
-      // Static check
-      if (strncmp(after, "/static/", 8) == 0) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/static/%s", p->path, after + 8);
-        enum MHD_Result ret = serve_static_file(path, connection);
-        if (ret == MHD_YES)
-          return MHD_YES; // request_completed will handle buffer
-      }
-
-      // Lua check (Normalize URL to "/" if empty after name)
-      const char *rel_url = (*after == '\0') ? "/" : after;
-      response = call_plugin_logic(p, rel_url, method, &status_code,
-                                   buffer->data, buffer->size);
-      if (response)
-        break;
-    }
+  // 3. Check if we are returning from suspension
+  if (ctx->processing_done) {
+    enum MHD_Result ret =
+        MHD_queue_response(connection, ctx->status_code, ctx->response);
+    MHD_destroy_response(ctx->response);
+    return ret;
   }
 
-  // 2. FALLBACK TO DEFAULT
-  if (!response) {
-    for (int i = 0; i < pm->plugin_count; i++) {
-      if (strcmp(pm->plugin_list[i]->name, "default") == 0) {
-        if (strncmp(url, "/static/", 8) == 0) {
-          char path[512];
-          snprintf(path, sizeof(path), "%s/static/%s", pm->plugin_list[i]->path,
-                   url + 8);
-          enum MHD_Result ret = serve_static_file(path, connection);
-          if (ret == MHD_YES)
-            return MHD_YES;
-        }
-        response = call_plugin_logic(pm->plugin_list[i], url, method, &status_code,
-                                     buffer->data, buffer->size);
-        break;
-      }
-    }
-  }
+  // 4. SUSPEND AND DISPATCH
+  // In a real app, use a Thread Pool. For now, we'll show a simple pthread.
+  pthread_t tid;
+  MHD_suspend_connection(connection);
+  pthread_create(&tid, NULL, async_worker, ctx);
+  pthread_detach(tid);
 
-  // 3. SEND RESPONSE OR 404
-  if (!response) {
-    status_code = 404;
-    response = MHD_create_response_from_buffer(13, "Not Found 404",
-                                               MHD_RESPMEM_MUST_COPY);
-  }
-
-  enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
-  MHD_destroy_response(response);
-  return ret;
+  return MHD_YES;
 }
 
 const char *get_mime_type(const char *path) {
@@ -136,24 +188,20 @@ const char *get_mime_type(const char *path) {
   return "application/octet-stream";
 }
 
-enum MHD_Result serve_static_file(const char *path,
-                                  struct MHD_Connection *connection) {
-  int fd = open(path, O_RDONLY);
-  if (fd == -1) {
-    // file not found, try lua or return 404
-    return MHD_NO; 
-  }
-
-  // Get file size
-  struct stat st;
-  fstat(fd, &st);
-
-  struct MHD_Response *response = MHD_create_response_from_fd(st.st_size, fd);
-  MHD_add_response_header(response, "Content-Type", get_mime_type(path));
-
-  enum MHD_Result ret = MHD_queue_response(connection, 200, response);
-  MHD_destroy_response(response);
-  return ret;
+struct MHD_Response *get_static_response(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd == -1) return NULL;
+    
+    struct stat sbuf;
+    if (fstat(fd, &sbuf) != 0) {
+        close(fd);
+        return NULL;
+    }
+    
+    // Create response from file descriptor
+    struct MHD_Response *response = MHD_create_response_from_fd(sbuf.st_size, fd);
+    // Add headers if needed (MHD_add_response_header) here
+    return response;
 }
 
 // Helper: Extracts data from the Lua 'result' table and builds an MHD response
@@ -192,10 +240,12 @@ struct MHD_Response *build_response_from_lua(lua_State *L, int *status_out) {
 struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
                                        const char *method, int *status_out,
                                        char *body_data, size_t body_len) {
+  pthread_mutex_lock(&p->lock); // <--- Lock before touching Lua
   lua_State *L = p->L;
   lua_getglobal(L, "app");
   if (!lua_istable(L, -1)) {
     lua_pop(L, 1);
+    pthread_mutex_unlock(&p->lock); // <--- Unlock after getting the response
     return NULL;
   }
 
@@ -219,11 +269,12 @@ struct MHD_Response *call_plugin_logic(Plugin *p, const char *url,
   if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
     fprintf(stderr, "Lua Error: %s\n", lua_tostring(L, -1));
     lua_pop(L, 2);
+    pthread_mutex_unlock(&p->lock); // <--- Unlock after getting the response
     return NULL;
   }
 
   struct MHD_Response *res = build_response_from_lua(L, status_out);
   lua_pop(L, 2);
+  pthread_mutex_unlock(&p->lock); // <--- Unlock after getting the response
   return res;
 }
-

@@ -12,6 +12,7 @@
 <body>
 
     <h1>Warehouse Inventory</h1>
+    <a href="/inventory/new-item">Create New Item</a>
 <table border="1">
     <tr>
         <th>SKU</th>
@@ -20,7 +21,7 @@
     </tr>
     <% for _, item in ipairs(items) do %>
     <tr>
-        <td><%= item.sku %></td>
+        <td> <a href="inventory/<%=item.id %>"><%= item.sku %></a></td>
         <td><%= item.name %></td>
         <td><%= item.quantity %></td>
     </tr>

@@ -1,8 +1,8 @@
 #ifndef PLUGIN_MANAGER_H
 #define PLUGIN_MANAGER_H
-#include <lua.h>      /* The core Lua VM functions */
-#include <lualib.h>   /* Access to standard Lua libraries (math, io, etc) */
-#include <lauxlib.h>  /* Helper functions for common tasks */
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
 #include <pthread.h>
 #include <sqlite3.h>
 
@@ -11,6 +11,7 @@ typedef struct {
     char *path;
     lua_State *L;
     sqlite3 *db;
+    pthread_mutex_t lock;
 } Plugin;
 
 
@@ -69,10 +70,7 @@ void register_logger(lua_State *L);
 void start_worker_pool(PluginManager *pm, int num_workers);
 int l_enqueue_job(lua_State *L);
 int l_trigger_async_event(lua_State *L);
-// C function exposed to Lua: plugin_register_hook("hook_name", "lua_function")
 int l_register_hook(lua_State *L);
-
-// C function exposed to Lua: plugin_call_hook("hook_name", data_table)
 int l_call_hook(lua_State *L);
 JobQueue *job_queue_init();
 

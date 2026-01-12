@@ -113,6 +113,7 @@ void destroy_manager(PluginManager *pm) {
 Plugin *create_plugin(char *name, char *path) {
   // 1. allocate memory
   Plugin *p = calloc(1, sizeof(Plugin));
+  pthread_mutex_init(&p->lock, NULL);
   if (p == NULL)
     return NULL;
   p->name = strdup(name);

@@ -14,17 +14,23 @@ app.get("/", function(req)
     return app.render("index", {items = items})
 end)
 
+
 app.get("/new-item", function (req)
     return app.render("new-item", {})
 end)
 
+app.get("/[item-id]", function (req)
+    local query = string.format("SELECT * FROM products WHERE id = '%s'", req.params["item-id"])
+    local items = db_query(query)
+    local item = items[1]
+    return app.render("view-item", {item = item})
+end)
+
 app.post("/new-item", function (req)
-    print("in post")
     local query = string.format(
         "INSERT INTO products (sku, name, quantity) VALUES ('%s', '%s', %s)",
         req.form.sku, req.form.name, req.form.quantity
     )
-    print(query)
     db_exec(query)
     return app.redirect("/inventory")
 end)
