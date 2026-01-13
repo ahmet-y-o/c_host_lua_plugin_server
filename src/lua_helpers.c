@@ -149,6 +149,7 @@ void apply_plugin_schema(lua_State *L, Plugin *p) {
     return; 
   }
 
+  // TODO: make it dynamic
   char db_path[1024];
   snprintf(db_path, sizeof(db_path), "%s/plugin.db", p->path);
   sqlite3 *db;
@@ -323,6 +324,7 @@ int l_db_exec(lua_State *L) {
   Plugin *p = (Plugin *)lua_touserdata(L, lua_upvalueindex(1));
   const char *sql = luaL_checkstring(L, 1);
 
+  // TODO: make dynamic
   char db_path[1024];
   get_plugin_db_path(p, db_path, sizeof(db_path));
 
@@ -353,6 +355,7 @@ int l_db_query(lua_State *L) {
   Plugin *p = (Plugin *)lua_touserdata(L, lua_upvalueindex(1));
   const char *sql = luaL_checkstring(L, 1);
 
+  // TODO: make dynamic
   char db_path[1024];
   get_plugin_db_path(p, db_path, sizeof(db_path));
 

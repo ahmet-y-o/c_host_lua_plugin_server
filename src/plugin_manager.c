@@ -218,6 +218,7 @@ void refresh_plugins(PluginManager *pm) {
     return;
   }
   struct dirent *ep;
+  // TODO: make dynamic
   char path_buffer[1024];
   while ((ep = readdir(dp))) {
     if (ep->d_name[0] == '.')
@@ -236,6 +237,7 @@ void refresh_plugins(PluginManager *pm) {
       setup_lua_environment(p->L, p, pm);
       // Execute the script now that C functions are bound
 
+      // TODO: make dynamic
       char script_path[1024];
       snprintf(script_path, sizeof(script_path), "%s/plugin.lua", path_buffer);
       if (luaL_dofile(p->L, script_path) != LUA_OK) {
@@ -541,6 +543,7 @@ void *worker_thread(void *arg) {
     setup_lua_environment(L, job->plugin, pm);
 
     // 3. Load the specific plugin's code
+    // TODO: make dynamic
     char script_path[1024];
     snprintf(script_path, sizeof(script_path), "%s/plugin.lua",
              job->plugin->path);

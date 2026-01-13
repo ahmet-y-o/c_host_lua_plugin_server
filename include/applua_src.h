@@ -166,6 +166,7 @@ function core.match(method, path, handler)
 end
 
 function core.get(path, handler) core.match("GET", path, handler) end
+function core.post(path, handler) core.match("UPDATE", path, handler) end
 function core.post(path, handler) core.match("POST", path, handler) end
 
 

@@ -1,3 +1,5 @@
+// TODO: flamegraphs benchmarks
+// TODO: changelog
 #include "server.h"
 #include "plugin_manager.h"
 #include <fcntl.h>
@@ -35,6 +37,7 @@ void *async_worker(void *arg) {
   // 1. TRY SPECIFIC PLUGINS
   for (int i = 0; i < ctx->pm->plugin_count; i++) {
     Plugin *p = ctx->pm->plugin_list[i];
+    // TODO verify security of strcmp
     if (strcmp(p->name, "default") == 0) continue;
 
     size_t len = strlen(p->name);
@@ -59,6 +62,7 @@ void *async_worker(void *arg) {
       const char *rel_url = (*after == '\0') ? "/" : after;
       ctx->response = call_plugin_logic(p, rel_url, ctx->method, &(ctx->status_code),
                                         ctx->upload_data, ctx->upload_size);
+      // TODO: should check for ==NULL or like this?
       if (ctx->response) break;
     }
   }
@@ -66,7 +70,6 @@ void *async_worker(void *arg) {
   // 2. FALLBACK TO DEFAULT (If no response yet)
   if (!ctx->response) {
     for (int i = 0; i < ctx->pm->plugin_count; i++) {
-      // FIX: Use ctx->pm, not pm
       if (strcmp(ctx->pm->plugin_list[i]->name, "default") == 0) {
         
         // Static Fallback
